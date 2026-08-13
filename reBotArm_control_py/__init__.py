@@ -2,5 +2,7 @@
 from . import actuator
 from . import kinematics
 from . import dynamics
+from . import trajectory
+from . import controllers
 
-__all__ = ["actuator", "kinematics", "dynamics"]
+__all__ = ["actuator", "kinematics", "dynamics", "trajectory", "controllers"]

@@ -14,7 +14,7 @@ urdf_path: "urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf"
 end_effector_frame: "end_link"
 
 channel: /dev/ttyACM0
-rate: 500
+rate: 400
 
 groups:
   arm:
@@ -50,7 +50,7 @@ joints:
       vel_kp: 0.0125
       vel_ki: 0.004
       pos_kp: 150.0
-      pos_ki: 0.5
+      pos_ki: 30.0
       vlim: 5.0
 
   - name: joint3
@@ -59,13 +59,13 @@ joints:
     model: "4340P"
     vendor: "damiao"
     MIT:
-      kp: 120.0
+      kp: 150.0
       kd: 8.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
       pos_kp: 150.0
-      pos_ki: 0.5
+      pos_ki: 20.0
       vlim: 5.0
 
   - name: joint4
@@ -74,14 +74,14 @@ joints:
     model: "4310"
     vendor: "damiao"
     MIT:
-      kp: 18.0
+      kp: 30.0
       kd: 2.0
     POS_VEL:
-      vel_kp: 0.0008
-      vel_ki: 0.002
-      pos_kp: 50.0
-      pos_ki: 1.0
-      vlim: 3.0
+      vel_kp: 0.0125
+      vel_ki: 0.004
+      pos_kp: 120.0
+      pos_ki: 10.0
+      vlim: 5.0
 
   - name: joint5
     motor_id: 0x05
@@ -89,14 +89,14 @@ joints:
     model: "4310"
     vendor: "damiao"
     MIT:
-      kp: 18.0
+      kp: 30.0
       kd: 2.0
     POS_VEL:
-      vel_kp: 0.0008
-      vel_ki: 0.002
-      pos_kp: 50.0
-      pos_ki: 1.0
-      vlim: 3.0
+      vel_kp: 0.0125
+      vel_ki: 0.004
+      pos_kp: 100.0
+      pos_ki: 5.0
+      vlim: 5.0
 
   - name: joint6
     motor_id: 0x06
@@ -104,14 +104,14 @@ joints:
     model: "4310"
     vendor: "damiao"
     MIT:
-      kp: 18.0
+      kp: 30.0
       kd: 2.0
     POS_VEL:
-      vel_kp: 0.0008
-      vel_ki: 0.002
-      pos_kp: 50.0
+      vel_kp: 0.0125
+      vel_ki: 0.004
+      pos_kp: 100.0
       pos_ki: 1.0
-      vlim: 3.0
+      vlim: 5.0
 
   - name: gripper
     motor_id: 0x07

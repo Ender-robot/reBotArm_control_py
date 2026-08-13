@@ -156,19 +156,75 @@ class RebotArmEndPose:
 
     # ── 公共 API ───────────────────────────────────────────────────────────
 
-    def set_gripper_target(self, pos: float) -> None:
+    def set_gripper_target(
+        self,
+        pos: float,
+        sync: bool = True,
+        tolerance: float = 0.005,
+        timeout: float = 5.0,
+    ) -> bool:
+        if not self._running or not self._has_gripper:
+            return False
+
         self._gripper_target = float(pos)
+        if not sync:
+            return True
+        success = self._wait_sync(
+            self._gripper_group,
+            [self._gripper_target],
+            tolerance,
+            timeout
+        )
+        if not success:
+            print("[set_gripper_target] 超时")
+        return success
 
-    def open_gripper(self) -> None:
-        if self._has_gripper:
-            self._gripper_group._mit_kp.fill(0)
-            self._gripper_group._mit_kd.fill(0)
-            pv = self._gripper_group._pv_vlim
-            self._gripper_target = float(pv[0]) if pv.size > 0 else 0.0
+    def open_gripper(
+        self,
+        sync: bool = True,
+        tolerance: float = 0.005,
+        timeout: float = 5.0,
+    ) -> bool:
+        if not self._running or not self._has_gripper:
+            return False
 
-    def close_gripper(self) -> None:
-        if self._has_gripper:
-            self._gripper_target = 0.0
+        self._gripper_group._mit_kp.fill(0)
+        self._gripper_group._mit_kd.fill(0)
+        pv = self._gripper_group._pv_vlim
+        self._gripper_target = float(pv[0]) if pv.size > 0 else 0.0
+        if not sync:
+            return True
+        success = self._wait_sync(
+            self._gripper_group,
+            [self._gripper_target],
+            tolerance,
+            timeout
+        )
+        if not success:
+            print("[open_gripper] 超时")
+        return success
+
+    def close_gripper(
+        self,
+        sync: bool = True,
+        tolerance: float = 0.005,
+        timeout: float = 5.0,
+    ) -> bool:
+        if not self._running or not self._has_gripper:
+            return False
+
+        self._gripper_target = 0.0
+        if not sync:
+            return True
+        success = self._wait_sync(
+            self._gripper_group,
+            [self._gripper_target],
+            tolerance,
+            timeout
+        )
+        if not success:
+            print("[close_gripper] 超时")
+        return success
 
     def safe_home(
         self,
@@ -254,7 +310,7 @@ class RebotArmEndPose:
         self._q_target = result.q[:self._n].copy()
         return True
 
-    def move_to_traj(
+    def move_linear(
         self,
         x: float,
         y: float,
@@ -263,6 +319,9 @@ class RebotArmEndPose:
         pitch: float = 0.0,
         yaw: float = 0.0,
         duration: float = 2.0,
+        sync: bool = True,
+        tolerance: float = 0.005,
+        timeout: float = 5.0,
     ) -> bool:
         if not self._running:
             return False
@@ -319,7 +378,19 @@ class RebotArmEndPose:
             target=self._send_loop, args=(duration,), daemon=True,
         )
         self._send_thread.start()
-        return True
+        if not sync:
+            return True
+
+        self._send_thread.join()
+        success = self._wait_sync(
+            self._arm_group,
+            self._traj[-1],
+            tolerance,
+            timeout
+        )
+        if not success:
+            print("[move_linear] 超时")
+        return success
 
     # ── 控制循环 ───────────────────────────────────────────────────────────
 
@@ -355,7 +426,6 @@ class RebotArmEndPose:
                 kd=self._gripper_group._mit_kd,
             )
 
-
     # ── 轨迹发送线程 ──────────────────────────────────────────────────────
 
     def _send_loop(self, duration: float) -> None:
@@ -367,3 +437,13 @@ class RebotArmEndPose:
             self._q_target[:] = self._traj[i]
             time.sleep(interval)
         self._moving = False
+
+    # ── 同步检测 ─────────────────────────────────────────────────────────
+    def _wait_sync(self, group, target, tolerance, timeout) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() <= deadline:
+            current = group.get_positions()
+            if np.max(np.abs(current - target)) <= tolerance:
+                return True
+            time.sleep(self._dt)
+        return False
