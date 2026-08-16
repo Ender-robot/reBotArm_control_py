@@ -11,12 +11,8 @@
     rebotarm.arm.mode_pos_vel()       # arm 组切换模式
     rebotarm.gripper.mode_mit()       # gripper 组切换模式
 
-    def loop(r, dt):
-        r.arm.send_pos_vel(joint_pos)     # arm 组发送
-        r.gripper.send_mit(gripper_pos)   # gripper 组发送
-
-    rebotarm.start_control_loop(loop)
-    rebotarm.stop_control_loop()
+    rebotarm.arm.send_pos_vel(joint_pos)     # arm 组发送
+    rebotarm.gripper.send_mit(gripper_pos)   # gripper 组发送
     rebotarm.disconnect()
 """
 

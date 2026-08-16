@@ -3,7 +3,6 @@
 配置驱动的硬件抽象层：
   - 所有参数均在 config/rebotarm.yaml 中定义（hardware_yaml 指定硬件配置文件）
   - 关节按 groups 分组，每组独立控制模式
-  - 统一 loop 中按组顺序同步发送，防止总线争用
 
 使用示例::
 
@@ -15,11 +14,8 @@
     arm.arm.mode_pos_vel()
     arm.gripper.mode_mit()
 
-    def loop(ref, dt):
-        ref.arm.send_pos_vel(joint_pos)
-        ref.gripper.send_mit(gripper_pos)
-
-    arm.start_control_loop(loop)
+    arm.arm.send_pos_vel(joint_pos)
+    arm.gripper.send_mit(gripper_pos)
 
     # 全部组 MIT（纯测试）
     arm.arm.mode_mit()
@@ -29,11 +25,10 @@
 """
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import yaml
@@ -110,7 +105,8 @@ def load_cfg(hw_yaml: str | None = None) -> dict:
     return {
         "name": data.get("name", "reBotArm"),
         "channel": data.get("channel", "/dev/ttyACM0"),
-        "rate": float(data.get("rate", 500.0)),
+        "movel_rate": float(data.get("movel_rate", 10.0)),
+        "servol_rate": float(data.get("servol_rate", 200.0)), 
         "groups": data.get("groups", {}),
         "joints": joints,
     }
@@ -414,7 +410,7 @@ class JointGroup:
     def get_positions(self, request_feedback: bool = True) -> np.ndarray:
         # 始终发送显式请求帧 + 处理接收队列
         # motorbridge 内部会针对 RS/DM 分别处理
-        self._request_feedback()
+        if request_feedback: self._request_feedback()
         
         out: list[float] = []
         for jc in self._jcfgs:
@@ -481,7 +477,6 @@ class RebotArm:
 
         self._name: str = cfg["name"]
         self._channel: str = cfg["channel"]
-        self._rate: float = cfg["rate"]
         self._all_joints: List[JointCfg] = cfg["joints"]
         self._groups_def: dict = cfg["groups"]
 
@@ -489,10 +484,6 @@ class RebotArm:
         self._motor_map: Dict[str, any] = {}
         self._groups: Dict[str, JointGroup] = {}
 
-        self._running = False
-        self._ctrl_thread: Optional[threading.Thread] = None
-        self._ctrl_fn: Optional[Callable] = None
-        self._ctrl_rate: float = self._rate
         self._connected: bool = False
 
         self._build_groups()
@@ -556,15 +547,6 @@ class RebotArm:
     @property
     def groups(self) -> Dict[str, JointGroup]:
         return self._groups
-
-    @property
-    def control_loop_active(self) -> bool:
-        t = getattr(self, "_ctrl_thread", None)
-        return t is not None and t.is_alive()
-
-    @property
-    def rate(self) -> float:
-        return self._ctrl_rate
 
     @property
     def has_gripper(self) -> bool:
@@ -667,6 +649,14 @@ class RebotArm:
             np.array(torq, dtype=np.float64),
         )
 
+    def get_state_with_time(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+        """返回机械臂状态和主机调用时间戳，不是硬件时间戳。"""
+        timestamp = time.time()
+        pos, vel, torq = self.get_state()
+        return pos, vel, torq, timestamp
+
     def get_positions(self) -> np.ndarray:
         return self.get_state()[0]
 
@@ -681,7 +671,6 @@ class RebotArm:
     def disconnect(self) -> None:
         if not self._connected:
             return
-        self.stop_control_loop()
         self.disable_all()
         time.sleep(0.5)
         for ctrl in self._ctrl_map.values():
@@ -723,45 +712,6 @@ class RebotArm:
         time.sleep(post_setup_delay)
         print("[reconnect] 控制器和电机已重新初始化")
 
-    # ── 控制循环 ────────────────────────────────────────────────────────
-
-    def start_control_loop(
-        self,
-        control_fn: Callable[["RebotArm", float], None],
-        rate: Optional[float] = None,
-    ) -> None:
-        if self.control_loop_active:
-            raise RuntimeError("控制循环已在运行，请先调用 stop_control_loop()")
-        self._running = True
-        self._ctrl_rate = rate if rate is not None else self._rate
-        self._ctrl_fn = control_fn
-        self._ctrl_thread = threading.Thread(
-            target=self._control_loop_impl,
-            name="rebotarm-control-loop",
-            daemon=True,
-        )
-        self._ctrl_thread.start()
-
-    def _control_loop_impl(self) -> None:
-        dt = 1.0 / self._ctrl_rate
-        while self._running:
-            t0 = time.perf_counter()
-            try:
-                self._ctrl_fn(self, dt)
-            except Exception:
-                if self._running:
-                    raise
-            elapsed = time.perf_counter() - t0
-            sleep_time = dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    def stop_control_loop(self) -> None:
-        self._running = False
-        t = getattr(self, "_ctrl_thread", None)
-        if t is not None and t.is_alive():
-            t.join(timeout=5.0)
-
     # ── 上下文管理器 ───────────────────────────────────────────────────────
 
     def __enter__(self) -> "RebotArm":
@@ -772,4 +722,4 @@ class RebotArm:
 
     def __repr__(self) -> str:
         gs = ", ".join(f"{k}({g.num_joints}j)" for k, g in self._groups.items())
-        return f"RebotArm({self._name!r}, [{gs}], rate={self._ctrl_rate}Hz)"
+        return f"RebotArm({self._name!r}, [{gs}])"
