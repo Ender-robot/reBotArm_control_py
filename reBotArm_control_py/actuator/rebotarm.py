@@ -477,6 +477,7 @@ class RebotArm:
 
         self._name: str = cfg["name"]
         self._channel: str = cfg["channel"]
+        self._servol_rate: float = cfg["servol_rate"]
         self._all_joints: List[JointCfg] = cfg["joints"]
         self._groups_def: dict = cfg["groups"]
 
@@ -555,6 +556,10 @@ class RebotArm:
     @property
     def hardware_yaml(self) -> str:
         return self._hw_yaml
+
+    @property
+    def servol_rate(self) -> float:
+        return self._servol_rate
 
     def __getattr__(self, name: str) -> any:
         if name.startswith("_"):
@@ -652,9 +657,9 @@ class RebotArm:
     def get_state_with_time(
         self,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-        """返回机械臂状态和主机调用时间戳，不是硬件时间戳。"""
-        timestamp = time.time()
+        """返回机械臂状态和软件单调时间戳，不是硬件时间戳。"""
         pos, vel, torq = self.get_state()
+        timestamp = time.monotonic()
         return pos, vel, torq, timestamp
 
     def get_positions(self) -> np.ndarray:

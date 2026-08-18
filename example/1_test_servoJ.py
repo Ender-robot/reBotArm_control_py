@@ -23,7 +23,7 @@ def main():
         while feedback.timestamp == 0.0:
             time.sleep(COMMAND_PERIOD)
 
-        target = feedback.position.copy()
+        target = feedback.arm.position.copy()
         initial_joint_position = target[0]
         integrated_position = 0.0
         step = abs(INTEGRATION_STEP)

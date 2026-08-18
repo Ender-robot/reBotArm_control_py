@@ -5,37 +5,63 @@ import numpy as np
 
 class ArmState():
 
-    def __init__(self, mode, num_joints):
+    def __init__(self, mode, num_arm_joints, num_gripper_joints):
         buffer_types = {
             "posvel": PosVel,
         }
 
-        self._buffer = buffer_types[mode](num_joints)
+        self._buffer = buffer_types[mode](
+            num_arm_joints,
+            num_gripper_joints,
+        )
         self.command = self._buffer.command
         self.feedback = self._buffer.feedback
 
 
 class PosVel():
     @dataclass
-    class Command():
+    class CommandGroup():
         position: np.ndarray
         velocity: np.ndarray
 
     @dataclass
-    class Feedback():
+    class FeedbackGroup():
         position: np.ndarray
         velocity: np.ndarray
         torque: np.ndarray
+
+    @dataclass
+    class Command():
+        arm: "PosVel.CommandGroup"
+        gripper: "PosVel.CommandGroup"
+
+    @dataclass
+    class Feedback():
+        arm: "PosVel.FeedbackGroup"
+        gripper: "PosVel.FeedbackGroup"
         timestamp: float
 
-    def __init__(self, num_joints):
+    def __init__(self, num_arm_joints, num_gripper_joints):
         self.command = self.Command(
-            position=np.zeros(num_joints),
-            velocity=np.zeros(num_joints),
+            arm=self.CommandGroup(
+                position=np.zeros(num_arm_joints),
+                velocity=np.zeros(num_arm_joints),
+            ),
+            gripper=self.CommandGroup(
+                position=np.zeros(num_gripper_joints),
+                velocity=np.zeros(num_gripper_joints),
+            ),
         )
         self.feedback = self.Feedback(
-            position=np.zeros(num_joints),
-            velocity=np.zeros(num_joints),
-            torque=np.zeros(num_joints),
+            arm=self.FeedbackGroup(
+                position=np.zeros(num_arm_joints),
+                velocity=np.zeros(num_arm_joints),
+                torque=np.zeros(num_arm_joints),
+            ),
+            gripper=self.FeedbackGroup(
+                position=np.zeros(num_gripper_joints),
+                velocity=np.zeros(num_gripper_joints),
+                torque=np.zeros(num_gripper_joints),
+            ),
             timestamp=0.0,
         )

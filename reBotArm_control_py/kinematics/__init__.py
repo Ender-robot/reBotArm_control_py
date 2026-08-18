@@ -13,10 +13,14 @@ from .robot_model import (
 )
 from .forward_kinematics import compute_fk, joint_to_pose
 from .inverse_kinematics import (
+    CLIKParams,
+    CLIKResult,
     compute_ik,
+    solve_clik_step,
     solve_ik_with_retry,
     solve_ik,
     pos_rot_to_se3,
+    xyz_quat_to_se3,
     IKResult,
     IKSolverParams,
 )
@@ -36,10 +40,14 @@ __all__ = [
     "compute_fk",
     "joint_to_pose",
     # 逆运动学
+    "CLIKParams",
+    "CLIKResult",
     "compute_ik",
+    "solve_clik_step",
     "solve_ik_with_retry",
     "solve_ik",
     "pos_rot_to_se3",
+    "xyz_quat_to_se3",
     "IKResult",
     "IKSolverParams",
 ]
