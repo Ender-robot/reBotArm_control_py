@@ -143,8 +143,8 @@ def _compute_pose_error_jacobian(
     end_frame_id: int,
     q: np.ndarray,
     target: pin.SE3,
-) -> tuple[np.ndarray, np.ndarray]:
-    """计算 SE(3) 位姿误差及其 LOCAL 坐标系雅可比。"""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """计算 SE(3) 位姿误差及当前、目标位姿对应的误差雅可比。"""
     pin.computeJointJacobians(model, data, q)
     pin.updateFramePlacements(model, data)
     T_cur = data.oMf[end_frame_id]
@@ -157,7 +157,8 @@ def _compute_pose_error_jacobian(
         pin.LOCAL,
     )
     J_error = -pin.Jlog6(T_error.inverse()) @ J_local
-    return error, J_error
+    J_target = pin.Jlog6(T_error)
+    return error, J_error, J_target
 
 
 def _compute_adaptive_damping(
@@ -376,6 +377,7 @@ def solve_clik_step(
     speed,
     gain: float,
     lookahead_time: float,
+    Vtarget: np.ndarray,
     params: Optional[CLIKParams] = None,
     q_reference: Optional[np.ndarray] = None,
 ) -> CLIKResult:
@@ -406,8 +408,13 @@ def solve_clik_step(
         raise ValueError("dt must be finite and positive")
     if not np.isfinite(gain) or gain < 0.0:
         raise ValueError("gain must be finite and non-negative")
+    Vtarget = np.asarray(Vtarget, dtype=np.float64)
+    if Vtarget.shape != (6,):
+        raise ValueError(f"Vtarget shape must be (6,), got {Vtarget.shape}")
+    if not np.all(np.isfinite(Vtarget)):
+        raise ValueError("Vtarget must contain only finite values")
 
-    error, J_error = _compute_pose_error_jacobian(
+    error, J_error, J_target = _compute_pose_error_jacobian(
         model,
         data,
         end_frame_id,
@@ -420,7 +427,9 @@ def solve_clik_step(
 
     matrix = J_error @ J_error.T
     matrix[np.diag_indices_from(matrix)] += damping * damping
-    qdot = gain * (J_error.T @ np.linalg.solve(matrix, -error))
+    target_error_rate = J_target @ Vtarget
+    desired_error_rate = -gain * error - target_error_rate
+    qdot = J_error.T @ np.linalg.solve(matrix, desired_error_rate)
     qdot, speed_scale = _scale_joint_velocity(qdot, speed)
     qdot, limit_scale = _scale_to_joint_limits(
         model,

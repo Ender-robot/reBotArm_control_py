@@ -4,6 +4,7 @@ import logging
 logger = logging.getLogger("RebotArmController")
 
 import numpy as np
+import pinocchio as pin
 
 from ..actuator import RebotArm
 from ..kinematics import (
@@ -111,6 +112,7 @@ class RebotArmController:
         self._joint_command_ready.clear()
         self._gripper_command_ready.clear()
         self._servol_command_ready.clear()
+        self.servo_state.status.Vtarget[:] = 0.0
         self.servo_state.status.q_reference = None
         self._release_control(self._controller_state)
         self.rebotarm.disconnect()
@@ -217,6 +219,7 @@ class RebotArmController:
     def _servol_control_loop(self):
         """ servoL 后台控制线程 """
         period = 1.0 / self.rebotarm.servol_rate
+        previous_command = None
         while not self._stop_servol.is_set():
             self._servol_command_ready.wait()
             deadline = time.monotonic()
@@ -227,13 +230,31 @@ class RebotArmController:
                 self._servol_command_ready.clear()
                 if self.servo_state.command is not command:
                     continue
+                self.servo_state.status.Vtarget[:] = 0.0
                 self.servo_state.status.q_reference = None
+                previous_command = None
                 self._release_control(ControllerState.SERVOL)
-                break
+                continue
             if not self._owns_control(ControllerState.SERVOL):
                 self._servol_command_ready.clear()
+                self.servo_state.status.Vtarget[:] = 0.0
                 self.servo_state.status.q_reference = None
-                break
+                previous_command = None
+                continue
+
+            if command is not previous_command:
+                command_dt = 0.0
+                if previous_command is not None:
+                    command_dt = command.timestamp - previous_command.timestamp
+                if command_dt <= 0.0 or command_dt >= self.servo_timeout:
+                    Vtarget = np.zeros(6)
+                else:
+                    target_delta = previous_command.target.inverse() * command.target
+                    Vtarget = pin.log6(target_delta).vector / command_dt
+                self.servo_state.status.Vtarget = Vtarget
+                previous_command = command
+            else:
+                Vtarget = self.servo_state.status.Vtarget
 
             arm_state = self.arm_state
             feedback_valid = (
@@ -256,6 +277,7 @@ class RebotArmController:
                         command.speed,
                         command.gain,
                         command.lookahead,
+                        Vtarget=Vtarget,
                         q_reference=q_reference,
                     )
                 except (ValueError, FloatingPointError, np.linalg.LinAlgError) as error:
@@ -269,6 +291,7 @@ class RebotArmController:
                         sigma_min=result.sigma_min,
                         damping=result.damping,
                         speed_scale=result.speed_scale,
+                        Vtarget=Vtarget.copy(),
                         q_reference=result.q.copy(),
                         timestamp=time.monotonic(),
                     )

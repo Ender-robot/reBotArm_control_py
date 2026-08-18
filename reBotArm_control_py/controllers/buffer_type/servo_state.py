@@ -31,6 +31,7 @@ class CLIK():
         sigma_min: float    # 雅可比矩阵最小奇异值
         damping: float      # 本周期实际阻尼系数
         speed_scale: float  # 关节速度整体缩放比例
+        Vtarget: np.ndarray  # 目标 TCP LOCAL 速度 [vx, vy, vz, wx, wy, wz]
         q_reference: np.ndarray | None  # 当前关节参考位置
         timestamp: float    # 最近一次成功计算时间
 
@@ -47,6 +48,7 @@ class CLIK():
             sigma_min=0.0,
             damping=0.0,
             speed_scale=0.0,
+            Vtarget=np.zeros(6),
             q_reference=None,
             timestamp=0.0,
         )
