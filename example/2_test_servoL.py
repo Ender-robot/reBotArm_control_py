@@ -13,12 +13,12 @@ from reBotArm_control_py.kinematics import (
 
 
 # 运动参数：位置单位为 m，关节速度单位为 rad/s。
-INTEGRATION_STEP = 0.001
-Z_FINAL_INTEGRATION_DISTANCE = 0.05
-X_FINAL_INTEGRATION_DISTANCE = 0.05
-SERVOL_GAIN = 100.0
-SERVOL_SPEED = np.array([3.0, 3.0, 3.0, 3.0, 6.0, 6.0])
-
+INTEGRATION_STEP = 0.006
+Z_FINAL_INTEGRATION_DISTANCE = 0.15
+X_FINAL_INTEGRATION_DISTANCE = 0.15
+SERVOL_GAIN = 20.0
+SERVOL_SPEED = np.array([6.0, 6.0, 6.0, 6.0, 10.0, 10.0])
+SERVOL_LOOKAHEAD = 0.1
 CONTROL_FREQUENCY = 30.0
 COMMAND_PERIOD = 1.0 / CONTROL_FREQUENCY
 
@@ -61,7 +61,12 @@ def main():
                 )
 
             target[2] = initial_position[2] + integrated_distance
-            controller.servoL(target, SERVOL_SPEED, SERVOL_GAIN)
+            controller.servoL(
+                target,
+                SERVOL_SPEED,
+                SERVOL_GAIN,
+                SERVOL_LOOKAHEAD,
+            )
             time.sleep(COMMAND_PERIOD)
 
         integrated_distance = 0.0
@@ -78,11 +83,21 @@ def main():
                 )
 
             target[0] = initial_position[0] + integrated_distance
-            controller.servoL(target, SERVOL_SPEED, SERVOL_GAIN)
+            controller.servoL(
+                target,
+                SERVOL_SPEED,
+                SERVOL_GAIN,
+                SERVOL_LOOKAHEAD,
+            )
             time.sleep(COMMAND_PERIOD)
 
         while True:
-            controller.servoL(target, SERVOL_SPEED, SERVOL_GAIN)
+            controller.servoL(
+                target,
+                SERVOL_SPEED,
+                SERVOL_GAIN,
+                SERVOL_LOOKAHEAD,
+            )
             time.sleep(COMMAND_PERIOD)
     except KeyboardInterrupt:
         logging.info("收到 Ctrl+C，停止笛卡尔伺服演示")
