@@ -14,12 +14,13 @@ from reBotArm_control_py.kinematics import (
 )
 
 
-# 运动参数：位置单位为 m，关节速度单位为 rad/s。
+# 运动参数：位置单位为 m，关节速度单位为 rad/s，加速度单位为 rad/s²。
 INTEGRATION_STEP = 0.006
 Z_FINAL_INTEGRATION_DISTANCE = 0.15
 X_FINAL_INTEGRATION_DISTANCE = 0.15
 SERVOL_GAIN = 15.0
 SERVOL_SPEED = np.array([6.0, 6.0, 6.0, 6.0, 10.0, 10.0])
+SERVOL_ACC = 10000.0
 SERVOL_LOOKAHEAD = 0.1
 CONTROL_FREQUENCY = 30.0
 COMMAND_PERIOD = 1.0 / CONTROL_FREQUENCY
@@ -30,6 +31,7 @@ def _send_and_record(controller, model, target, recording):
     controller.servoL(
         target,
         SERVOL_SPEED,
+        SERVOL_ACC,
         SERVOL_GAIN,
         SERVOL_LOOKAHEAD,
     )

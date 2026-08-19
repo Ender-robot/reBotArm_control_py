@@ -179,6 +179,45 @@ def _compute_adaptive_damping(
     return params.damping_max * ratio * ratio
 
 
+def _limit_joint_acceleration(
+    qdot: np.ndarray,
+    qdot_reference: np.ndarray,
+    acc,
+    dt: float,
+) -> np.ndarray:
+    """按关节加速度上限整体缩放期望速度变化。"""
+    qdot = np.asarray(qdot, dtype=np.float64)
+    qdot_reference = np.asarray(qdot_reference, dtype=np.float64)
+    if qdot.ndim != 1 or not np.all(np.isfinite(qdot)):
+        raise ValueError("qdot must be a finite one-dimensional array")
+    if qdot_reference.shape != qdot.shape:
+        raise ValueError(
+            f"qdot_reference shape must be {qdot.shape}, "
+            f"got {qdot_reference.shape}"
+        )
+    if not np.all(np.isfinite(qdot_reference)):
+        raise ValueError("qdot_reference must contain only finite values")
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError("dt must be finite and positive")
+
+    acc = np.asarray(acc, dtype=np.float64)
+    if acc.shape == ():
+        acc = np.full(qdot.shape, float(acc))
+    if acc.shape != qdot.shape:
+        raise ValueError(f"acc shape must be {qdot.shape}, got {acc.shape}")
+    if not np.all(np.isfinite(acc)) or np.any(acc < 0.0):
+        raise ValueError("acc must contain only finite non-negative values")
+
+    delta = qdot - qdot_reference
+    moving = np.abs(delta) > 0.0
+    if not np.any(moving):
+        return qdot.copy()
+
+    scale = float(np.min(acc[moving] * dt / np.abs(delta[moving])))
+    scale = min(1.0, scale)
+    return qdot_reference + delta * scale
+
+
 def _scale_joint_velocity(
     qdot: np.ndarray,
     speed,
@@ -378,6 +417,8 @@ def solve_clik_step(
     gain: float,
     lookahead_time: float,
     Vtarget: np.ndarray,
+    qdot_reference: np.ndarray,
+    acc,
     params: Optional[CLIKParams] = None,
     q_reference: Optional[np.ndarray] = None,
 ) -> CLIKResult:
@@ -430,6 +471,7 @@ def solve_clik_step(
     target_error_rate = J_target @ Vtarget
     desired_error_rate = -gain * error - target_error_rate
     qdot = J_error.T @ np.linalg.solve(matrix, desired_error_rate)
+    qdot = _limit_joint_acceleration(qdot, qdot_reference, acc, dt)
     qdot, speed_scale = _scale_joint_velocity(qdot, speed)
     qdot, limit_scale = _scale_to_joint_limits(
         model,

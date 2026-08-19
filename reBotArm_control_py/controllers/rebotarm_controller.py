@@ -114,6 +114,7 @@ class RebotArmController:
         self._servol_command_ready.clear()
         self.servo_state.status.Vtarget[:] = 0.0
         self.servo_state.status.q_reference = None
+        self.servo_state.status.qdot_reference = None
         self._release_control(self._controller_state)
         self.rebotarm.disconnect()
         logger.info("断开连接")
@@ -135,7 +136,7 @@ class RebotArmController:
         command.velocity[:] = speed
         self._joint_command_ready.set()
 
-    def servoL(self, target, speed, gain, lookahead = 0.1):
+    def servoL(self, target, speed, acc, gain, lookahead = 0.1):
         """ 末端笛卡尔伺服 """
         target = xyz_quat_to_se3(target)
         gain = float(gain)
@@ -148,6 +149,7 @@ class RebotArmController:
         self.servo_state.command = CLIK.Command(
             target=target,
             speed=speed,
+            acc=acc,
             gain=gain,
             lookahead=lookahead,
             timestamp=time.monotonic(),
@@ -232,6 +234,7 @@ class RebotArmController:
                     continue
                 self.servo_state.status.Vtarget[:] = 0.0
                 self.servo_state.status.q_reference = None
+                self.servo_state.status.qdot_reference = None
                 previous_command = None
                 self._release_control(ControllerState.SERVOL)
                 continue
@@ -239,6 +242,7 @@ class RebotArmController:
                 self._servol_command_ready.clear()
                 self.servo_state.status.Vtarget[:] = 0.0
                 self.servo_state.status.q_reference = None
+                self.servo_state.status.qdot_reference = None
                 previous_command = None
                 continue
 
@@ -266,6 +270,9 @@ class RebotArmController:
                 q_reference = self.servo_state.status.q_reference
                 if q_reference is None:
                     q_reference = q_measured.copy()
+                qdot_reference = self.servo_state.status.qdot_reference
+                if qdot_reference is None:
+                    qdot_reference = np.zeros(self._model.nv)
                 try:
                     result = solve_clik_step(
                         self._model,
@@ -278,6 +285,8 @@ class RebotArmController:
                         command.gain,
                         command.lookahead,
                         Vtarget=Vtarget,
+                        qdot_reference=qdot_reference,
+                        acc=command.acc,
                         q_reference=q_reference,
                     )
                 except (ValueError, FloatingPointError, np.linalg.LinAlgError) as error:
@@ -293,6 +302,7 @@ class RebotArmController:
                         speed_scale=result.speed_scale,
                         Vtarget=Vtarget.copy(),
                         q_reference=result.q.copy(),
+                        qdot_reference=result.qdot.copy(),
                         timestamp=time.monotonic(),
                     )
                     self._joint_command_ready.set()
