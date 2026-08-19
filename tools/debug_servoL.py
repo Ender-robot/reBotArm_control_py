@@ -14,13 +14,14 @@ from reBotArm_control_py.kinematics import (
 )
 
 
-# 运动参数：位置单位为 m，关节速度单位为 rad/s，加速度单位为 rad/s²。
-INTEGRATION_STEP = 0.006
-Z_FINAL_INTEGRATION_DISTANCE = 0.15
-X_FINAL_INTEGRATION_DISTANCE = 0.15
-SERVOL_GAIN = 15.0
-SERVOL_SPEED = np.array([6.0, 6.0, 6.0, 6.0, 10.0, 10.0])
-SERVOL_ACC = 10000.0
+# 运动参数：位置单位为 m，关节速度单位为 rad/s，加速度单位为 rad/s²
+INTEGRATION_STEP = 0.003
+Z_FINAL_INTEGRATION_DISTANCE = 0.20
+X_FINAL_INTEGRATION_DISTANCE = 0.20
+Z_HOLD_TIME = 1.0
+SERVOL_GAIN = 18.0
+SERVOL_SPEED = [3.4, 3.4, 3.4, 11.3, 11.3, 11.3]
+SERVOL_ACC = [15.0, 15.0, 15.0, 20.0, 20.0, 20.0]
 SERVOL_LOOKAHEAD = 0.1
 CONTROL_FREQUENCY = 30.0
 COMMAND_PERIOD = 1.0 / CONTROL_FREQUENCY
@@ -135,6 +136,10 @@ def main():
             Z_FINAL_INTEGRATION_DISTANCE,
             recording,
         )
+        hold_until = time.monotonic() + Z_HOLD_TIME
+        while time.monotonic() < hold_until:
+            _send_and_record(controller, model, target, recording)
+            time.sleep(COMMAND_PERIOD)
         _integrate_axis(
             controller,
             model,
@@ -157,7 +162,7 @@ def main():
         controller.disconnect()
 
         # 保存录制数据
-        output_file = Path(__file__).parent / "debug_servoL_recording.json"
+        output_file = Path(__file__).parent / f"servoL_recording_gain{SERVOL_GAIN}_lookahead{SERVOL_LOOKAHEAD}_acc{SERVOL_ACC}_step{INTEGRATION_STEP}.json"
         with open(output_file, "w") as f:
             json.dump(recording, f, indent=2)
         logging.info("调试数据已保存到: %s", output_file)
