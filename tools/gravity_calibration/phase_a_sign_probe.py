@@ -1,12 +1,12 @@
 """Phase A — sign calibration by hand (NO torque, motors stay disabled).
 
-Streams mechPos (0x7019) of motors 1-6 at ~5 Hz and logs deltas vs start.
-Johnny moves one joint at a time by hand; the delta sign vs the physical
-direction fixes the motor->URDF sign convention for the RS build.
+Loads the current RebotArm hardware configuration and streams arm joint
+positions at ~5 Hz. Move one joint at a time by hand; the delta sign vs the
+physical direction fixes the motor-to-URDF sign convention.
 
-Run: .demo/bin/python phase_a_sign_probe.py [duration_s]
+Run: python phase_a_sign_probe.py [duration_s]
 Output: prints a line whenever any joint moves >0.03 rad from its last
-printed value; writes full trace to phase_a_trace.jsonl.
+printed value; writes full trace to data/dm/phase_a_trace.jsonl.
 """
 
 import json
@@ -14,45 +14,63 @@ import sys
 import time
 from pathlib import Path
 
-from motorbridge import Controller
+from reBotArm_control_py.actuator import RebotArm
 
-DUR = float(sys.argv[1]) if len(sys.argv) > 1 else 120.0
-MECH_POS = 0x7019
-MODELS = ["rs-06", "rs-06", "rs-06", "rs-00", "rs-00", "rs-00"]
 
-ctrl = Controller("can0")
-motors = {}
-for mid, model in zip(range(1, 7), MODELS):
-    motors[mid] = ctrl.add_robstride_motor(mid, 0xFD, model)
+TRACE_PATH = Path(__file__).parent / "data" / "dm" / "phase_a_trace.jsonl"
 
-def read_all():
-    out = {}
-    for mid, m in motors.items():
-        try:
-            out[mid] = m.robstride_get_param_f32(MECH_POS)
-        except Exception:
-            out[mid] = None
-    return out
 
-start = read_all()
-print("START pose:", {k: round(v, 4) for k, v in start.items()}, flush=True)
-last_printed = dict(start)
+def read_all(group):
+    positions = group.get_positions()
+    return {
+        name: float(position)
+        for name, position in zip(group.joint_names, positions)
+    }
 
-trace = open(Path(__file__).parent / "phase_a_trace.jsonl", "w")
-t0 = time.time()
-while time.time() - t0 < DUR:
-    q = read_all()
-    trace.write(json.dumps({"t": round(time.time() - t0, 3), "q": q}) + "\n")
-    trace.flush()
-    for mid, v in q.items():
-        if v is None or last_printed[mid] is None:
-            continue
-        if abs(v - last_printed[mid]) > 0.03:
-            print(
-                f"MOVE motor{mid}: {v:+.4f} rad (delta vs start {v - start[mid]:+.4f})",
-                flush=True,
-            )
-            last_printed[mid] = v
-    time.sleep(0.2)
 
-print("END pose:", {k: (round(v, 4) if v is not None else None) for k, v in read_all().items()}, flush=True)
+def main():
+    duration = float(sys.argv[1]) if len(sys.argv) > 1 else 120.0
+    rebotarm = RebotArm()
+    try:
+        rebotarm.connect()
+        group = rebotarm.arm
+        start = read_all(group)
+        print(
+            "START pose:",
+            {name: round(position, 4) for name, position in start.items()},
+            flush=True,
+        )
+        last_printed = dict(start)
+
+        TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(TRACE_PATH, "w") as trace:
+            start_time = time.time()
+            while time.time() - start_time < duration:
+                positions = read_all(group)
+                trace.write(json.dumps({
+                    "t": round(time.time() - start_time, 3),
+                    "q": positions,
+                }) + "\n")
+                trace.flush()
+                for name, position in positions.items():
+                    if abs(position - last_printed[name]) > 0.03:
+                        print(
+                            f"MOVE {name}: {position:+.4f} rad "
+                            f"(delta vs start {position - start[name]:+.4f})",
+                            flush=True,
+                        )
+                        last_printed[name] = position
+                time.sleep(0.2)
+
+        end = read_all(group)
+        print(
+            "END pose:",
+            {name: round(position, 4) for name, position in end.items()},
+            flush=True,
+        )
+    finally:
+        rebotarm.disconnect()
+
+
+if __name__ == "__main__":
+    main()

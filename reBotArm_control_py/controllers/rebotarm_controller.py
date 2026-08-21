@@ -13,38 +13,25 @@ from ..kinematics import (
     solve_clik_step,
     xyz_quat_to_se3,
 )
-from .buffer_type import ArmState, CLIK, ControllerState, ServoState
+from .buffer_type import CLIK, ControllerState, ServoState
 
 class RebotArmController:
 
-    def __init__(self, mode="posvel"):
-        self.rebotarm = RebotArm()
-        self._arm_group = self.rebotarm.groups["arm"]
-        self._gripper_group = self.rebotarm.groups["gripper"]
-        self.arm_state = ArmState(
-            mode,
-            self._arm_group.num_joints,
-            self._gripper_group.num_joints,
-        )
+    def __init__(self, mode):
+        self.rebotarm = RebotArm(mode)
         self._model = load_robot_model()
         self._data = self._model.createData()
         self._end_frame_id = get_end_effector_frame_id(self._model)
         self.servo_state = ServoState("clik", self._model.nv)
-        self._arm_indexes = []
-        self._gripper_indexes = []
         self.servo_timeout = 0.2 # 伺服超时时间
 
         # >>>>> 后台线程 >>>>>
-        self.comunicater = None # 后台通讯线程
         self.servol_worker = None # 笛卡尔伺服线程
         # <<<<< 后台线程 <<<<<
 
         # >>>>> 线程标志 >>>>>
-        self._stop_comunicater = threading.Event()
         self._stop_servol = threading.Event()
 
-        self._joint_command_ready = threading.Event()
-        self._gripper_command_ready = threading.Event()
         self._servol_command_ready = threading.Event()
         # <<<<< 线程标志 <<<<<
 
@@ -58,24 +45,14 @@ class RebotArmController:
     # >>>>> 公共接口 >>>>>
     def connect(self):
         """ 连接真机 """
-        if self.comunicater is not None and self.comunicater.is_alive():
+        if self.servol_worker is not None and self.servol_worker.is_alive():
             logger.warning("已连接, 或通讯线程已存在")
             return
 
         self.rebotarm.connect()
         try:
-            self._configure_mode()
-            self.rebotarm.enable_all()
-            self._prepare_group_routes()
-            self._stop_comunicater.clear()
             self._stop_servol.clear()
 
-            # 创建通讯线程
-            self.comunicater = threading.Thread(
-                target=self._communicate,
-                name="comunicater",
-                daemon=True,
-            )
             # 创建 servol 线程
             self.servol_worker = threading.Thread(
                 target=self._servol_control_loop,
@@ -83,34 +60,25 @@ class RebotArmController:
                 daemon=True,
             )
 
-            self.comunicater.start()
             self.servol_worker.start()
-            time.sleep(1)
+            time.sleep(2)
 
             logger.info("连接成功")
         except Exception:
-            self.comunicater = None
             self.servol_worker = None
             self.rebotarm.disconnect()
             raise
 
     def disconnect(self):
         """ 断开真机 """
-        communicater = self.comunicater
         servol_worker = self.servol_worker
-        self._stop_comunicater.set()
         self._stop_servol.set()
         self._servol_command_ready.set()
 
         if servol_worker is not None:
             servol_worker.join()
             self.servol_worker = None
-        if communicater is not None:
-            communicater.join()
-            self.comunicater = None
 
-        self._joint_command_ready.clear()
-        self._gripper_command_ready.clear()
         self._servol_command_ready.clear()
         self.servo_state.status.Vtarget[:] = 0.0
         self.servo_state.status.q_reference = None
@@ -119,10 +87,29 @@ class RebotArmController:
         self.rebotarm.disconnect()
         logger.info("断开连接")
 
+    def set_mit_params(self, name, kp, kd):
+        """ 设置 mit 的 kp, kd 参数 """
+        if self.rebotarm.mode != "mit":
+            raise RuntimeError("仅 MIT 模式支持设置 kp, kd 参数")
+        
+        for group_name, group in self.rebotarm.groups.items():
+            if name not in group.joint_names:
+                continue
+            index = group.joint_names.index(name)
+            command = getattr(self.rebotarm.arm_state.command, group_name)
+            command.kp[index] = kp
+            command.kd[index] = kd
+            if group_name == "arm":
+                self.rebotarm._joint_command_ready.set()
+            elif group_name == "gripper":
+                self.rebotarm._gripper_command_ready.set()
+            return
+        raise ValueError(f"unknown joint: {name}")
+
     def servoJ(self, target, speed):
         """ 透传关节指令 """
         target = np.asarray(target)
-        command = self.arm_state.command.arm
+        command = self.rebotarm.arm_state.command.arm
         if target.shape != command.position.shape:
             raise ValueError(
                 f"target shape must be {command.position.shape}, "
@@ -134,7 +121,7 @@ class RebotArmController:
 
         command.position[:] = target
         command.velocity[:] = speed
-        self._joint_command_ready.set()
+        self.rebotarm._joint_command_ready.set()
 
     def servoL(self, target, speed, acc, gain, lookahead = 0.1):
         """ 末端笛卡尔伺服 """
@@ -192,28 +179,6 @@ class RebotArmController:
                 self._controller_state = ControllerState.IDLE
                 self._control_timestamp = 0.0
 
-    def _configure_mode(self):
-        """ 配置各关节组的控制模式 """
-        for group in self.rebotarm.groups.values():
-            if group.num_joints == 0:
-                continue
-            if not group.mode_pos_vel():
-                raise RuntimeError("failed to set posvel mode")
-
-    def _prepare_group_routes(self):
-        """ 建立全局关节到各分组的索引映射 """
-        joint_indexes = {
-            name: index
-            for index, name in enumerate(self.rebotarm.joint_names)
-        }
-        self._arm_indexes = [
-            joint_indexes[name]
-            for name in self._arm_group.joint_names
-        ]
-        self._gripper_indexes = [
-            joint_indexes[name]
-            for name in self._gripper_group.joint_names
-        ]
     # <<<<< 内部接口 <<<<<
 
 
@@ -260,7 +225,7 @@ class RebotArmController:
             else:
                 Vtarget = self.servo_state.status.Vtarget
 
-            arm_state = self.arm_state
+            arm_state = self.rebotarm.arm_state
             feedback_valid = (
                 arm_state.feedback.timestamp != 0.0
                 and now - arm_state.feedback.timestamp < self.servo_timeout
@@ -305,7 +270,7 @@ class RebotArmController:
                         qdot_reference=result.qdot.copy(),
                         timestamp=time.monotonic(),
                     )
-                    self._joint_command_ready.set()
+                    self.rebotarm._joint_command_ready.set()
 
             deadline += period
             remaining = deadline - time.monotonic()
@@ -314,32 +279,4 @@ class RebotArmController:
             else:
                 deadline = time.monotonic()
 
-    def _communicate(self):
-        """ 后台通讯线程 """
-        while not self._stop_comunicater.is_set():
-            position, velocity, torque, timestamp = (
-                self.rebotarm.get_state_with_time()
-            )
-            feedback = self.arm_state.feedback
-            feedback.arm.position[:] = position[self._arm_indexes]
-            feedback.arm.velocity[:] = velocity[self._arm_indexes]
-            feedback.arm.torque[:] = torque[self._arm_indexes]
-            feedback.gripper.position[:] = position[self._gripper_indexes]
-            feedback.gripper.velocity[:] = velocity[self._gripper_indexes]
-            feedback.gripper.torque[:] = torque[self._gripper_indexes]
-            feedback.timestamp = timestamp
-
-            if self._joint_command_ready.is_set():
-                self._joint_command_ready.clear()
-                command = self.arm_state.command.arm
-                position = command.position.copy()
-                velocity = command.velocity.copy()
-                self._arm_group.send_pos_vel(position, velocity)
-
-            if self._gripper_command_ready.is_set():
-                self._gripper_command_ready.clear()
-                command = self.arm_state.command.gripper
-                position = command.position.copy()
-                velocity = command.velocity.copy()
-                self._gripper_group.send_pos_vel(position, velocity)
     # <<<<< 后台线程 <<<<<

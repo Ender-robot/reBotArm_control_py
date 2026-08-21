@@ -37,9 +37,9 @@ def _send_and_record(controller, model, target, recording):
         SERVOL_LOOKAHEAD,
     )
 
-    feedback = controller.arm_state.feedback
+    feedback = controller.rebotarm.arm_state.feedback
     servo_status = controller.servo_state.status
-    command = controller.arm_state.command.arm
+    command = controller.rebotarm.arm_state.command.arm
     q_feedback = pad_q_for_model(
         model,
         feedback.arm.position.copy(),
@@ -104,7 +104,7 @@ def _integrate_axis(
 
 def main():
     """连接真机并以 30 Hz 发送 TCP 路径点，同时录制调试信息。"""
-    controller = RebotArmController()
+    controller = RebotArmController("posvel")
 
     # 录制数据
     recording = []
@@ -113,7 +113,7 @@ def main():
     try:
         controller.connect()
 
-        feedback = controller.arm_state.feedback
+        feedback = controller.rebotarm.arm_state.feedback
         while feedback.timestamp == 0.0:
             time.sleep(COMMAND_PERIOD)
 

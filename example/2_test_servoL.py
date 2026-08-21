@@ -27,12 +27,12 @@ COMMAND_PERIOD = 1.0 / CONTROL_FREQUENCY
 
 def main():
     """连接真机并以 30 Hz 发送 TCP 路径点。"""
-    controller = RebotArmController()
+    controller = RebotArmController("posvel")
 
     try:
         controller.connect()
 
-        feedback = controller.arm_state.feedback
+        feedback = controller.rebotarm.arm_state.feedback
         while feedback.timestamp == 0.0:
             time.sleep(COMMAND_PERIOD)
 
