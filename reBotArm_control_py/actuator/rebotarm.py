@@ -109,6 +109,7 @@ def load_cfg(hw_yaml: str | None = None) -> dict:
     return {
         "name": data.get("name", "reBotArm"),
         "channel": data.get("channel", "/dev/ttyACM0"),
+        "comm_rate": float(data.get("comm_rate", 350.0)),
         "urdf_path": data.get("urdf_path"),
         "movel_rate": float(data.get("movel_rate", 10.0)),
         "servol_rate": float(data.get("servol_rate", 200.0)), 
@@ -487,6 +488,7 @@ class RebotArm:
         self.mode = mode
         self._name: str = cfg["name"]
         self._channel: str = cfg["channel"]
+        self._comm_period: float = 1.0 / cfg["comm_rate"]
         self._servol_rate: float = cfg["servol_rate"]
         self._all_joints: List[JointCfg] = cfg["joints"]
         self._groups_def: dict = cfg["groups"]
@@ -766,6 +768,7 @@ class RebotArm:
     # ── 后台通讯 ────────────────────────────────────────────────────────
 
     def _communicate_posvel(self) -> None:
+        next_cycle = time.monotonic()
         while not self._stop_comunicater.is_set():
             position, velocity, torque, timestamp = self.get_state_with_time()
             feedback = self.arm_state.feedback
@@ -791,6 +794,13 @@ class RebotArm:
                 velocity = command.velocity.copy()
                 self._groups["gripper"].send_pos_vel(position, velocity)
 
+            next_cycle += self._comm_period
+            timeout = next_cycle - time.monotonic()
+            if timeout > 0.0:
+                self._stop_comunicater.wait(timeout)
+            else:
+                next_cycle = time.monotonic()
+
     def _communicate_mit(self) -> None:
         arm_group = self._groups["arm"]
         arm_command_initialized = False
@@ -799,6 +809,7 @@ class RebotArm:
         command_kp = None
         command_kd = None
         command_torque = None
+        next_cycle = time.monotonic()
         while not self._stop_comunicater.is_set():
             position, velocity, torque, timestamp = self.get_state_with_time()
             feedback = self.arm_state.feedback
@@ -815,6 +826,12 @@ class RebotArm:
                     self._motor_map[name].get_state() is None
                     for name in arm_group.joint_names
                 ):
+                    next_cycle += self._comm_period
+                    timeout = next_cycle - time.monotonic()
+                    if timeout > 0.0:
+                        self._stop_comunicater.wait(timeout)
+                    else:
+                        next_cycle = time.monotonic()
                     continue
                 command = self.arm_state.command.arm
                 command.position[:] = feedback.arm.position
@@ -869,6 +886,13 @@ class RebotArm:
                     kd,
                     torque,
                 )
+
+            next_cycle += self._comm_period
+            timeout = next_cycle - time.monotonic()
+            if timeout > 0.0:
+                self._stop_comunicater.wait(timeout)
+            else:
+                next_cycle = time.monotonic()
 
     # ── 生命周期 ────────────────────────────────────────────────────────
 
