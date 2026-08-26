@@ -13,7 +13,7 @@ from reBotArm_control_py.kinematics import (
 
 
 # 运动参数：位置单位为 m，关节速度单位为 rad/s
-MODE = "mit"
+MODE = "posvel"
 INTEGRATION_STEP = 0.003
 Z_FINAL_INTEGRATION_DISTANCE = 0.15
 X_FINAL_INTEGRATION_DISTANCE = 0.15
@@ -110,7 +110,11 @@ def main():
     except KeyboardInterrupt:
         logging.info("收到 Ctrl+C，停止笛卡尔伺服演示")
     finally:
-        controller.disconnect()
+        time.sleep(1.0) # 等上一条伺服指令的控制权超时释放
+        if controller.home(): # disconnect 会掉力矩, 回零失败就不能断开
+            controller.disconnect()
+        else:
+            logging.error("回零失败，保持通电，请手动扶住机械臂后再断开")
 
 
 if __name__ == "__main__":

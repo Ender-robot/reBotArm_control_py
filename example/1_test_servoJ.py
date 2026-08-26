@@ -46,7 +46,11 @@ def main():
     except KeyboardInterrupt:
         logging.info("收到 Ctrl+C，停止关节伺服演示")
     finally:
-        controller.disconnect()
+        time.sleep(1.0) # 等上一条伺服指令的控制权超时释放
+        if controller.home(): # disconnect 会掉力矩, 回零失败就不能断开
+            controller.disconnect()
+        else:
+            logging.error("回零失败，保持通电，请手动扶住机械臂后再断开")
 
 
 if __name__ == "__main__":

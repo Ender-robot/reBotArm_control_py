@@ -63,56 +63,6 @@ def build_targets(initial_position, quaternion, step):
     return targets
 
 
-def move_to_home(controller, rate, speed=0.15):
-    """MIT 模式慢速回零。
-
-    逐周期插值下发位置, 速度前馈给 0 (靠位置环牵引, 避免 servoL 那条
-    kd/lookahead 寄生刚度通道)。必须每周期刷新时间戳, 否则通讯线程的
-    velocity_timeout 保护会介入。
-    """
-    rebotarm = controller.rebotarm
-    command = rebotarm.arm_state.command
-    feedback = rebotarm.arm_state.feedback
-    q_home = np.zeros(6)
-    q_start = feedback.arm.position.copy()
-    distance = float(np.max(np.abs(q_home - q_start)))
-
-    if distance < 0.01:
-        print("已在零点附近, 跳过回零")
-        return
-
-    duration = distance / speed
-    steps = max(1, int(duration * rate))
-    period = 1.0 / rate
-    print(f"慢速回零: 最大行程 {distance:.4f} rad, 预计 {duration:.1f} s")
-
-    deadline = time.monotonic()
-    for step in range(1, steps + 1):
-        ratio = step / steps
-        command.timestamp = 0.0
-        command.arm.position[:] = q_start + ratio * (q_home - q_start)
-        command.arm.velocity[:] = 0.0
-        command.timestamp = time.monotonic()
-        rebotarm._joint_command_ready.set()
-        deadline += period
-        sleep = deadline - time.monotonic()
-        if sleep > 0.0:
-            time.sleep(sleep)
-
-    # 到位后持续保持, 让位置环收敛并消除稳态误差
-    hold_until = time.monotonic() + 1.5
-    while time.monotonic() < hold_until:
-        command.timestamp = 0.0
-        command.arm.position[:] = q_home
-        command.arm.velocity[:] = 0.0
-        command.timestamp = time.monotonic()
-        rebotarm._joint_command_ready.set()
-        time.sleep(period)
-
-    error = float(np.max(np.abs(feedback.arm.position - q_home)))
-    print(f"回零完成, 最大残余误差 {error:.4f} rad")
-
-
 def record_sample(controller, target, phase, lookahead, speed, start_time):
     """执行一次 servoL 并记录该周期的全部中间量。
 
@@ -256,15 +206,11 @@ def main():
     except KeyboardInterrupt:
         print("\n收到 Ctrl+C, 尚未开始录制")
     finally:
-        # MIT 模式下 disconnect 会直接掉力矩, 断电前必须先慢速回零
-        try:
-            controller.clear_fault() # IK 失败会锁 FAULT, 不清则回零指令被拒
-            move_to_home(controller, args.rate)
-        except Exception as error:
-            print(f"回零失败, 请手动扶住机械臂: {error}")
-            raise
-        finally:
+        time.sleep(1.0) # 等上一条 servoL 的控制权超时释放
+        if controller.home(): # disconnect 会掉力矩, 回零失败就不能断开
             controller.disconnect()
+        else:
+            print("回零失败, 保持通电, 请手动扶住机械臂后再断开")
 
 
 if __name__ == "__main__":

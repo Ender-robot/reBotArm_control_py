@@ -5,4 +5,5 @@ class ControllerState(enum.Enum):
     IDLE = "idle"
     SERVOJ = "servoj"
     SERVOL = "servol"
+    HOME   = "home"
     FAULT  = "fault"

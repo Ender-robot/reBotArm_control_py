@@ -40,7 +40,7 @@ class RebotArmController:
         self.servoL_ik_params.step_size = 0.8
         # <<<<< IK 参数 <<<<<
 
-        self.ema = EMA(0.9) # 简易滤波器
+        self.ema = EMA(0.9) # EMA 滤波器
 
         # >>>>> servoL 速度前馈状态 >>>>>
         self._servoL_last_q = None
@@ -162,10 +162,49 @@ class RebotArmController:
         self.rebotarm._joint_command_ready.set()
 
     def clear_fault(self):
+        """ 清除警报标志 """
         self._release_control(ControllerState.FAULT)
 
-    # <<<<< 公共接口 <<<<<
+    def home(self, speed = 0.15, rate = 30.0, tolerance = 0.04, timeout = 30.0): 
+        """ 回零 """
+        arm_state = self.rebotarm.arm_state
+        q_start = arm_state.feedback.arm.position.copy()
+        distance = float(np.max(np.abs(q_start)))
 
+        self.clear_fault() # 清故障
+        if not self._request_control(ControllerState.HOME):
+            logger.warning(f"控制器正被 {self._controller_state} 占用, 拒绝 home 指令")
+            return False
+
+        period = 1.0 / rate
+        command = arm_state.command
+        steps = max(1, int(distance / speed * rate))
+        deadline = time.monotonic() + timeout
+        # mit 模式 velocity 是速度前馈, 回零靠位置环牵引所以给 0
+        # posvel 模式 velocity 是限速, 给 0 机械臂不会动
+        feedforward = 0.0 if self.rebotarm.mode == "mit" else speed
+        try:
+            step = 0
+            while True:
+                step = min(step + 1, steps) # 插值走完后封顶, 自然转为保持零位
+                self._request_control(ControllerState.HOME) # 续期, 防自身占用过期
+                command.timestamp = 0.0
+                command.arm.position[:] = q_start * (1.0 - step / steps)
+                command.arm.velocity[:] = feedforward
+                command.timestamp = time.monotonic()
+                self.rebotarm._joint_command_ready.set()
+
+                if float(np.max(np.abs(arm_state.feedback.arm.position))) < tolerance:
+                    logger.info("回零完成")
+                    return True
+                if time.monotonic() >= deadline:
+                    logger.warning("回零超时")
+                    return False
+                time.sleep(period)
+        finally:
+            self._release_control(ControllerState.HOME)
+
+    # <<<<< 公共接口 <<<<<
 
     # >>>>> 内部方法 >>>>>
     def _request_control(self, state):
