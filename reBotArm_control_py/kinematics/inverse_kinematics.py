@@ -22,10 +22,10 @@ import pinocchio as pin
 class IKParams:
     """IK 求解器参数"""
     max_iter: int = 500
-    position_tolerance: float = 0.002
+    position_tolerance: float = 0.001
     orientation_tolerance: float = math.radians(1.0)
     step_size: float = 0.5    # 步长
-    damping: float = 1e-6      # Tikhonov 正则化系数 λ
+    damping: float = 1e-6     # Tikhonov 正则化系数 λ
 
 
 @dataclass

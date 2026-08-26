@@ -5,7 +5,7 @@ from reBotArm_control_py.controllers import RebotArmController
 
 
 MIT_KP = 0.0
-MIT_KD = 4.0
+MIT_KD = 3.0
 
 
 def main():

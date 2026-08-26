@@ -35,6 +35,7 @@ class PosVel():
     class Command():
         arm: "PosVel.CommandGroup"
         gripper: "PosVel.CommandGroup"
+        timestamp: float
 
     @dataclass
     class Feedback():
@@ -52,6 +53,7 @@ class PosVel():
                 position=np.zeros(num_gripper_joints),
                 velocity=np.zeros(num_gripper_joints),
             ),
+            timestamp=0.0,
         )
         self.feedback = self.Feedback(
             arm=self.FeedbackGroup(
@@ -87,6 +89,8 @@ class Mit():
     class Command():
         arm: "Mit.CommandGroup"
         gripper: "Mit.CommandGroup"
+        timestamp: float
+        velocity_timeout: float
 
     @dataclass
     class Feedback():
@@ -110,6 +114,8 @@ class Mit():
                 kd=np.zeros(num_gripper_joints),
                 torque=np.zeros(num_gripper_joints),
             ),
+            timestamp=0.0,
+            velocity_timeout=0.0,
         )
         self.feedback = self.Feedback(
             arm=self.FeedbackGroup(

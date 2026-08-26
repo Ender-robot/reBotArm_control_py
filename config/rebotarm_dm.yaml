@@ -36,8 +36,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 120.0
-      kd: 8.0
+      kp: 50.0
+      kd: 4.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -56,8 +56,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 120.0
-      kd: 8.0
+      kp: 100.0
+      kd: 4.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -72,12 +72,12 @@ joints:
     vendor: "damiao"
     calibration:
       offset: 0.0
-      gravity_k: 1.06
+      gravity_k: 1.08
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 150.0
-      kd: 8.0
+      kp: 100.0
+      kd: 4.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -96,8 +96,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 30.0
-      kd: 2.0
+      kp: 50.0
+      kd: 4.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -116,8 +116,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 30.0
-      kd: 2.0
+      kp: 20.0
+      kd: 4.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -136,8 +136,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 30.0
-      kd: 2.0
+      kp: 20.0
+      kd: 4.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -151,8 +151,8 @@ joints:
     model: "4310"
     vendor: "damiao"
     MIT:
-      kp: 8.0
-      kd: 1.0
+      kp: 10.0
+      kd: 2.0
     POS_VEL:
       vel_kp: 0.01
       vel_ki: 0.002

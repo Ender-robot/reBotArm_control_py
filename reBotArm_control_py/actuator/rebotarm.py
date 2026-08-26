@@ -809,6 +809,8 @@ class RebotArm:
         command_kp = None
         command_kd = None
         command_torque = None
+        command_time = 0.0
+        velocity_timeout = 0.0
         next_cycle = time.monotonic()
         while not self._stop_comunicater.is_set():
             position, velocity, torque, timestamp = self.get_state_with_time()
@@ -833,10 +835,12 @@ class RebotArm:
                     else:
                         next_cycle = time.monotonic()
                     continue
-                command = self.arm_state.command.arm
+                command_state = self.arm_state.command
+                command = command_state.arm
                 command.position[:] = feedback.arm.position
                 command.velocity[:] = 0.0
                 command.torque[:] = 0.0
+                command_state.timestamp = 0.0
                 command_position = command.position.copy()
                 command_velocity = command.velocity.copy()
                 command_kp = command.kp.copy()
@@ -846,12 +850,27 @@ class RebotArm:
 
             if self._joint_command_ready.is_set():
                 self._joint_command_ready.clear()
-                command = self.arm_state.command.arm
+                command_state = self.arm_state.command
+                command = command_state.arm
                 command_position = command.position.copy()
                 command_velocity = command.velocity.copy()
                 command_kp = command.kp.copy()
                 command_kd = command.kd.copy()
                 command_torque = command.torque.copy()
+                command_time = command_state.timestamp
+                velocity_timeout = command_state.velocity_timeout
+
+            if (
+                command_time != 0.0
+                and time.monotonic() - command_time >= velocity_timeout
+            ):
+                expired_timestamp = command_time
+                command_time = 0.0
+                command_velocity[:] = 0.0
+                command_state = self.arm_state.command
+                if command_state.timestamp == expired_timestamp:
+                    command_state.timestamp = 0.0
+                    command_state.arm.velocity[:] = 0.0
 
             gravity = compute_generalized_gravity(
                 self._dynamics_model,
