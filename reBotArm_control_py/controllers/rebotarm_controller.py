@@ -5,11 +5,13 @@ logger = logging.getLogger("RebotArmController")
 import math
 
 import numpy as np
+import pinocchio as pin
 
 from ..actuator import RebotArm
 from ..kinematics import (
     get_end_effector_frame_id,
     load_robot_model,
+    pad_q_for_model,
     solve_ik,
     xyz_quat_to_se3,
     IKSolverParams
@@ -34,7 +36,7 @@ class RebotArmController:
 
         # >>>>> IK 参数 >>>>>
         self.servoL_ik_params = IKSolverParams()
-        self.servoL_ik_params.max_iter = 10
+        self.servoL_ik_params.max_iter = 30
         self.servoL_ik_params.position_tolerance = 0.002
         self.servoL_ik_params.orientation_tolerance = math.radians(1.0)
         self.servoL_ik_params.step_size = 0.8
@@ -203,6 +205,24 @@ class RebotArmController:
                 time.sleep(period)
         finally:
             self._release_control(ControllerState.HOME)
+
+    def fk_curr(self):
+        """ 获得当下 TCP """
+        return self.fk_from_joint(self.rebotarm.arm_state.feedback.arm.position)
+
+    def fk_from_joint(self, joint):
+        """ 从关节角 FK, 返回 [x, y, z, qx, qy, qz, qw] """
+        q = pad_q_for_model(self._model, np.asarray(joint, dtype=np.float64))
+        pin.forwardKinematics(self._model, self._data, q)
+        pin.updateFramePlacements(self._model, self._data)
+
+        oMf = self._data.oMf[self._end_frame_id]
+        quaternion = pin.Quaternion(oMf.rotation)
+
+        return np.array([
+            *oMf.translation,
+            quaternion.x, quaternion.y, quaternion.z, quaternion.w,
+        ])
 
     # <<<<< 公共接口 <<<<<
 
