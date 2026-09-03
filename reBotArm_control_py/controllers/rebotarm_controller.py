@@ -36,13 +36,13 @@ class RebotArmController:
 
         # >>>>> IK 参数 >>>>>
         self.servoL_ik_params = IKSolverParams()
-        self.servoL_ik_params.max_iter = 30
+        self.servoL_ik_params.max_iter = 50
         self.servoL_ik_params.position_tolerance = 0.002
         self.servoL_ik_params.orientation_tolerance = math.radians(1.0)
         self.servoL_ik_params.step_size = 0.8
         # <<<<< IK 参数 <<<<<
 
-        self.ema = EMA(0.9) # EMA 滤波器
+        self.ema = EMA(0.2) # EMA 滤波器
 
         # >>>>> servoL 速度前馈状态 >>>>>
         self._servoL_last_q = None
@@ -167,7 +167,7 @@ class RebotArmController:
         """ 清除警报标志 """
         self._release_control(ControllerState.FAULT)
 
-    def home(self, speed = 0.15, rate = 30.0, tolerance = 0.04, timeout = 30.0): 
+    def home(self, speed = 0.15, rate = 30.0, tolerance = 0.08, timeout = 30.0): 
         """ 回零 """
         arm_state = self.rebotarm.arm_state
         q_start = arm_state.feedback.arm.position.copy()

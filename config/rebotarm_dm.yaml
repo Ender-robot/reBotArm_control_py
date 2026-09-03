@@ -36,8 +36,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 50.0
-      kd: 4.0
+      kp: 25.0
+      kd: 5.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -52,12 +52,12 @@ joints:
     vendor: "damiao"
     calibration:
       offset: 0.0
-      gravity_k: 1.05
+      gravity_k: 1.0976
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 100.0
-      kd: 4.0
+      kp: 40.0
+      kd: 8.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -72,12 +72,12 @@ joints:
     vendor: "damiao"
     calibration:
       offset: 0.0
-      gravity_k: 1.08
+      gravity_k: 1.0479
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 100.0
-      kd: 4.0
+      kp: 40.0
+      kd: 8.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -92,12 +92,12 @@ joints:
     vendor: "damiao"
     calibration:
       offset: 0.0
-      gravity_k: 0.98
+      gravity_k: 0.9066
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 50.0
-      kd: 4.0
+      kp: 30.0
+      kd: 8.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -112,12 +112,12 @@ joints:
     vendor: "damiao"
     calibration:
       offset: 0.0
-      gravity_k: 0.6
+      gravity_k: 1.3403
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 20.0
-      kd: 4.0
+      kp: 25.0
+      kd: 5.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004

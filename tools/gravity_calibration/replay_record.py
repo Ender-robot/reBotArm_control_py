@@ -1,17 +1,34 @@
-"""posvel 回放重整轨迹，正反各一遍，录制力矩数据。
+"""按轨迹路径点静态保持并录制重力标定数据。
 
-运行：python replay_record.py data/traj_<tag>.json
-输出：data/sweep_<tag>.json
+轨迹由 generate_calibration_traj.py 生成，本脚本只改变回放方式：
+每隔 POINT_STRIDE 个路径点到位后静态保持，采集一段反馈数据；正反各一遍，
+供拟合脚本按 waypoint_index 配对平均，以降低方向相关摩擦的影响。
+
+运行：修改下方路径后直接运行本文件
+输出：data/sweep_static_<tag>.json
 """
 
-import argparse
 import json
 import time
 from pathlib import Path
+
 import numpy as np
 
 from reBotArm_control_py.actuator import RebotArm
 
+
+DATA_DIR = Path(__file__).parent / "data"
+TRAJECTORY_PATH = DATA_DIR / "traj_No1.json"
+OUTPUT_PATH = DATA_DIR / "sweep_static_No1.json"
+
+POINT_STRIDE = 50       # 每隔多少个生成轨迹点采集一个静态点
+SETTLE_TIME = 0.5       # 到位且速度稳定后，额外等待时间 (s)
+HOLD_TIME = 1.0         # 稳定后的静态采样时间 (s)
+SAMPLE_RATE = 30.0      # 静态采样频率 (Hz)
+POSITION_TOLERANCE = 0.005  # 到位位置误差 (rad)
+VELOCITY_TOLERANCE = 0.02   # 稳定速度阈值 (rad/s)
+SETTLE_TIMEOUT = 10.0       # 单个路径点最大等待时间 (s)
+V_LIMIT_SCALE = 1.5
 
 MAX_TORQUE = 25.0  # N·m
 FEEDBACK_FROZEN_CYCLES = 30
@@ -22,9 +39,20 @@ class SafetyAbort(Exception):
     pass
 
 
-def check_safety(samples, current_tau):
+def select_waypoints(waypoints, reverse=False):
+    """按固定步长选择路径点，并始终保留最后一个点。"""
+    if len(waypoints) == 0:
+        return []
+
+    indices = list(range(0, len(waypoints), POINT_STRIDE))
+    if indices[-1] != len(waypoints) - 1:
+        indices.append(len(waypoints) - 1)
+    selected = [(index, waypoints[index]) for index in indices]
+    return selected[::-1] if reverse else selected
+
+
+def check_safety(samples, current_tau, check_frozen=True):
     """安全检查：力矩超限、反馈冻结。"""
-    # 力矩超限
     if np.abs(current_tau).max() > MAX_TORQUE:
         joint_id = int(np.argmax(np.abs(current_tau)))
         raise SafetyAbort(
@@ -32,8 +60,8 @@ def check_safety(samples, current_tau):
             f"(上限 {MAX_TORQUE} N·m)"
         )
 
-    # 反馈冻结检查
-    if len(samples) > FEEDBACK_FROZEN_CYCLES:
+    # 静态保持时 q 和 tau 稳定是正常现象，不能判定为反馈冻结。
+    if check_frozen and len(samples) > FEEDBACK_FROZEN_CYCLES:
         window = samples[-FEEDBACK_FROZEN_CYCLES:]
         q_diff = np.abs(np.diff([s["q"] for s in window], axis=0)).max()
         tau_diff = np.abs(np.diff([s["tau"] for s in window], axis=0)).max()
@@ -60,7 +88,6 @@ def move_to_home(rebotarm, v_move=0.05):
     rebotarm.arm_state.command.arm.velocity[:] = v_move
     rebotarm._joint_command_ready.set()
 
-    # 等待到位
     timeout = distance / v_move * 2.0 + 10.0
     start_time = time.monotonic()
     while time.monotonic() - start_time < timeout:
@@ -88,8 +115,7 @@ def move_to_start(rebotarm, start_q, v_move):
     rebotarm.arm_state.command.arm.velocity[:] = v_move
     rebotarm._joint_command_ready.set()
 
-    # 等待到位
-    timeout = distance / v_move * 2.0 + 5.0  # 理论时间的2倍 + 5秒余量
+    timeout = distance / v_move * 2.0 + 5.0
     start_time = time.monotonic()
     while time.monotonic() - start_time < timeout:
         current_q = rebotarm.arm_state.feedback.arm.position.copy()
@@ -101,117 +127,144 @@ def move_to_start(rebotarm, start_q, v_move):
     raise SafetyAbort(f"归位超时 ({timeout:.1f} s)")
 
 
-def replay_pass(rebotarm, waypoints, dt, vlim, pass_name):
-    """回放一遍轨迹（正序或反序）。"""
-    samples = []
-    start_time = time.monotonic()
+def _send_waypoint(rebotarm, q_cmd, vlim):
+    """发送一个位置保持命令。"""
+    rebotarm.arm_state.command.arm.position[:] = q_cmd
+    rebotarm.arm_state.command.arm.velocity[:] = vlim
+    rebotarm._joint_command_ready.set()
 
-    for i, q_cmd in enumerate(waypoints):
-        deadline = start_time + i * dt
+
+def _wait_until_settled(rebotarm, q_cmd, samples):
+    """等待实际位置和速度达到静态采样条件。"""
+    deadline = time.monotonic() + SETTLE_TIMEOUT
+    while time.monotonic() < deadline:
+        feedback = rebotarm.arm_state.feedback.arm
+        q = feedback.position.copy()
+        v = feedback.velocity.copy()
+        tau = feedback.torque.copy()
+        check_safety(samples, tau, check_frozen=False)
+
+        position_ok = np.max(np.abs(q - q_cmd)) <= POSITION_TOLERANCE
+        velocity_ok = np.max(np.abs(v)) <= VELOCITY_TOLERANCE
+        if position_ok and velocity_ok:
+            time.sleep(SETTLE_TIME)
+            feedback = rebotarm.arm_state.feedback.arm
+            q = feedback.position.copy()
+            v = feedback.velocity.copy()
+            if (
+                np.max(np.abs(q - q_cmd)) <= POSITION_TOLERANCE
+                and np.max(np.abs(v)) <= VELOCITY_TOLERANCE
+            ):
+                return
+
+        time.sleep(0.02)
+
+    raise SafetyAbort(f"路径点稳定超时 ({SETTLE_TIMEOUT:.1f} s)")
+
+
+def _record_hold(rebotarm, waypoint_index, q_cmd, vlim, pass_name, samples):
+    """在一个路径点保持并采集静态样本。"""
+    _send_waypoint(rebotarm, q_cmd, vlim)
+    _wait_until_settled(rebotarm, q_cmd, samples)
+
+    sample_count = max(1, round(HOLD_TIME * SAMPLE_RATE))
+    period = 1.0 / SAMPLE_RATE
+    start_time = time.monotonic()
+    deadline = start_time
+
+    for _ in range(sample_count):
         now = time.monotonic()
         if now < deadline:
-            time.sleep(max(0.0, deadline - now))
+            time.sleep(deadline - now)
 
-        # 发送命令
-        rebotarm.arm_state.command.arm.position[:] = q_cmd
-        rebotarm.arm_state.command.arm.velocity[:] = vlim
-        rebotarm._joint_command_ready.set()
-
-        # 等待一小段让电机响应
-        time.sleep(dt * 0.3)
-
-        # 采样
-        feedback = rebotarm.arm_state.feedback
-        q = feedback.arm.position.copy()
-        v = feedback.arm.velocity.copy()
-        tau = feedback.arm.torque.copy()
-
+        feedback = rebotarm.arm_state.feedback.arm
+        q = feedback.position.copy()
+        v = feedback.velocity.copy()
+        tau = feedback.torque.copy()
         sample = {
             "t": round(time.monotonic() - start_time, 6),
             "pass": pass_name,
+            "waypoint_index": waypoint_index,
             "q": q.round(6).tolist(),
-            "q_cmd": [round(float(x), 6) for x in q_cmd],
+            "q_cmd": q_cmd.round(6).tolist(),
             "v": v.round(6).tolist(),
             "tau": tau.round(6).tolist(),
         }
         samples.append(sample)
+        check_safety(samples, tau, check_frozen=False)
+        deadline += period
 
-        check_safety(samples, tau)
 
-        if (i + 1) % 10 == 0:
-            print(f"  {pass_name}: {i+1}/{len(waypoints)} 点", end="\r")
-
-    print(f"  {pass_name}: {len(waypoints)}/{len(waypoints)} 点 - 完成")
+def replay_static_pass(rebotarm, waypoints, vlim, pass_name, reverse=False):
+    """按选定路径点静态保持一遍。"""
+    samples = []
+    selected = select_waypoints(waypoints, reverse=reverse)
+    for point_number, (waypoint_index, q_cmd) in enumerate(selected, start=1):
+        _record_hold(
+            rebotarm,
+            waypoint_index,
+            q_cmd,
+            vlim,
+            pass_name,
+            samples,
+        )
+        print(
+            f"  {pass_name}: {point_number}/{len(selected)} 点 - "
+            f"waypoint {waypoint_index}"
+        )
     return samples
 
 
-def replay_and_record(rebotarm, trajectory: dict, vlim_scale: float = 1.5) -> dict:
-    """回放轨迹并录制数据。
-
-    Args:
-        rebotarm: 已连接的 RebotArm 实例
-        trajectory: {"dt": float, "v_target": float, "q": [[6], ...]}
-        vlim_scale: vlim = v_target * vlim_scale
-
-    Returns:
-        {"samples": [{"t", "pass", "q", "q_cmd", "v", "tau"}, ...]}
-    """
+def replay_and_record(rebotarm, trajectory):
+    """正反向静态回放并录制数据。"""
     waypoints = np.array(trajectory["q"])
-    dt = trajectory["dt"]
     v_target = trajectory["v_target"]
-    vlim = v_target * vlim_scale
+    vlim = v_target * V_LIMIT_SCALE
 
-    # 切换到 posvel 模式
     rebotarm.arm.mode_pos_vel()
     time.sleep(0.5)
 
-    # 归位
     move_to_start(rebotarm, waypoints[0], v_move=v_target * 0.5)
     time.sleep(1.0)
 
-    # 正序回放
-    print("正序回放...")
-    samples_forward = replay_pass(rebotarm, waypoints, dt, vlim, "forward")
+    print("正向静态采样...")
+    samples_forward = replay_static_pass(
+        rebotarm, waypoints, vlim, "forward",
+    )
 
     time.sleep(1.0)
 
-    # 反序回放
-    print("反序回放...")
-    samples_reverse = replay_pass(rebotarm, waypoints[::-1], dt, vlim, "reverse")
+    print("反向静态采样...")
+    samples_reverse = replay_static_pass(
+        rebotarm, waypoints, vlim, "reverse", reverse=True,
+    )
 
     return {"samples": samples_forward + samples_reverse}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="回放轨迹并录制力矩")
-    parser.add_argument("input", type=Path, help="输入 traj_<tag>.json")
-    parser.add_argument("--vlim-scale", type=float, default=1.5, help="vlim = v_target * scale")
-    args = parser.parse_args()
-
-    trajectory = json.loads(args.input.read_text())
-
-    tag = args.input.stem.replace("traj_", "")
-    output = args.input.parent / f"sweep_{tag}.json"
+    trajectory = json.loads(TRAJECTORY_PATH.read_text())
 
     rebotarm = RebotArm(mode="posvel")
     try:
         rebotarm.connect()
+        selected_count = len(select_waypoints(np.array(trajectory["q"])))
         print(f"轨迹路点数: {len(trajectory['q'])}")
-        print(f"目标速度: {trajectory['v_target']} rad/s")
-        print(f"vlim: {trajectory['v_target'] * args.vlim_scale:.3f} rad/s")
+        print(f"静态采样点数: {selected_count}")
+        print(f"路径点步长: {POINT_STRIDE}")
+        print(f"稳定等待: {SETTLE_TIME:.2f} s")
+        print(f"保持采样: {HOLD_TIME:.2f} s @ {SAMPLE_RATE:.1f} Hz")
         print()
 
-        result = replay_and_record(rebotarm, trajectory, args.vlim_scale)
+        result = replay_and_record(rebotarm, trajectory)
+        OUTPUT_PATH.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"\n已保存 {len(result['samples'])} 个样本到 {OUTPUT_PATH}")
 
-        output.write_text(json.dumps(result, indent=2, ensure_ascii=False))
-        print(f"\n已保存 {len(result['samples'])} 个样本到 {output}")
-
-        # 返回零点
         print()
         move_to_home(rebotarm, v_move=0.05)
 
-    except SafetyAbort as e:
-        print(f"\n安全中止: {e}")
+    except SafetyAbort as error:
+        print(f"\n安全中止: {error}")
         print("尝试返回零点...")
         try:
             move_to_home(rebotarm, v_move=0.05)
