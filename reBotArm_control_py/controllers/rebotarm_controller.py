@@ -167,7 +167,7 @@ class RebotArmController:
         """ 清除警报标志 """
         self._release_control(ControllerState.FAULT)
 
-    def home(self, speed = 0.15, rate = 30.0, tolerance = 0.08, timeout = 30.0): 
+    def home(self, speed = 0.15, rate = 30.0, tolerance = 0.06, timeout = 30.0): 
         """ 回零 """
         arm_state = self.rebotarm.arm_state
         q_start = arm_state.feedback.arm.position.copy()

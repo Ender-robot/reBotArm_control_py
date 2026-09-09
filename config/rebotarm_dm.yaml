@@ -56,8 +56,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 40.0
-      kd: 8.0
+      kp: 35.0
+      kd: 10.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -76,8 +76,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 40.0
-      kd: 8.0
+      kp: 35.0
+      kd: 10.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -96,8 +96,8 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 30.0
-      kd: 8.0
+      kp: 20.0
+      kd: 10.0
     POS_VEL:
       vel_kp: 0.016
       vel_ki: 0.004
@@ -116,7 +116,7 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 25.0
+      kp: 15.0
       kd: 5.0
     POS_VEL:
       vel_kp: 0.016
@@ -136,7 +136,7 @@ joints:
       tau_bias: 0.0
       friction: 0.0
     MIT:
-      kp: 20.0
+      kp: 10.0
       kd: 4.0
     POS_VEL:
       vel_kp: 0.016
