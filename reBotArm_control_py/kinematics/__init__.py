@@ -17,6 +17,7 @@ from .inverse_kinematics import (
     solve_ik_with_retry,
     solve_ik,
     pos_rot_to_se3,
+    xyz_quat_to_se3,
     IKResult,
     IKSolverParams,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "solve_ik_with_retry",
     "solve_ik",
     "pos_rot_to_se3",
+    "xyz_quat_to_se3",
     "IKResult",
     "IKSolverParams",
 ]
