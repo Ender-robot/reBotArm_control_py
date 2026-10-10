@@ -1,7 +1,7 @@
 """录制 servoL(mit) 诊断数据。
 
 复用 example/2_test_servoL.py 的虚拟路径生成逻辑, 但在每个控制周期
-记录进出 servoL 的全部中间量, 用于定位 mit 模式抖动来源。
+记录进出 servoL 的反馈、IK 结果和下发指令, 用于定位 mit 模式抖动来源。
 
 运行：python record_servol.py --tag No1
 输出：data/servol_<tag>.json
@@ -16,7 +16,6 @@ import numpy as np
 import pinocchio as pin
 
 from reBotArm_control_py.controllers import RebotArmController
-from reBotArm_control_py.controllers.process_command import compute_scale_factor
 from reBotArm_control_py.kinematics import (
     compute_fk,
     load_robot_model,
@@ -63,11 +62,11 @@ def build_targets(initial_position, quaternion, step):
     return targets
 
 
-def record_sample(controller, target, phase, lookahead, speed, start_time):
-    """执行一次 servoL 并记录该周期的全部中间量。
+def record_sample(controller, target, phase, speed, start_time):
+    """执行一次 servoL 并记录该周期的反馈、IK 结果和下发指令。
 
     servoL 内部不暴露中间量, 因此这里在调用前后各采一次状态, 并用与
-    servoL 完全相同的输入重算一遍 IK, 得到未经滤波的原始前馈作为对照。
+    servoL 完全相同的输入重算一遍 IK, 记录求解状态和误差。
     """
     arm_state = controller.rebotarm.arm_state
     command = arm_state.command
@@ -79,9 +78,9 @@ def record_sample(controller, target, phase, lookahead, speed, start_time):
     ema_before = None if controller.ema.value is None else controller.ema.value.copy()
     t_call = time.monotonic()
 
-    controller.servoL(target, speed, lookahead)
+    controller.servoL(target, speed)
 
-    # 用调用前的反馈重算原始前馈, 与实际下发的滤波后速度对照
+    # 用调用前的反馈重算 IK, 记录求解状态和误差
     ik_result = solve_ik(
         controller._model,
         controller._data,
@@ -90,8 +89,6 @@ def record_sample(controller, target, phase, lookahead, speed, start_time):
         q_before,
         controller.servoL_ik_params,
     )
-    qdot_raw = (ik_result.q - q_before) / lookahead
-    vel_scale = compute_scale_factor(qdot_raw, speed)
 
     return {
         "t": round(t_call - start_time, 6),
@@ -104,10 +101,7 @@ def record_sample(controller, target, phase, lookahead, speed, start_time):
         "ik_success": bool(ik_result.success),
         "ik_iterations": int(ik_result.iterations),
         "ik_position_error": round(float(ik_result.position_error), 8),
-        # 位置误差 delta 是寄生刚度的来源: tau 中含 (kd/lookahead)*delta
         "delta": [round(float(x), 8) for x in (ik_result.q - q_before)],
-        "qdot_raw": [round(float(x), 6) for x in qdot_raw],
-        "vel_scale_raw": round(float(vel_scale), 6),
         "ema_state_before": None if ema_before is None else
             [round(float(x), 6) for x in ema_before],
         # 实际下发给电机的指令
@@ -119,7 +113,7 @@ def record_sample(controller, target, phase, lookahead, speed, start_time):
     }
 
 
-def record(controller, rate, lookahead, alpha):
+def record(controller, rate, alpha):
     """跑一遍虚拟路径并逐周期录制。"""
     controller.ema.alpha = alpha
     controller.ema.reset()
@@ -147,7 +141,7 @@ def record(controller, rate, lookahead, alpha):
             if now < deadline:
                 time.sleep(deadline - now)
             samples.append(
-                record_sample(controller, target, phase, lookahead, speed, start_time)
+                record_sample(controller, target, phase, speed, start_time)
             )
             deadline += period
     except KeyboardInterrupt:
@@ -160,11 +154,9 @@ def record(controller, rate, lookahead, alpha):
         "rate": rate,
         "aborted": aborted,
         "planned_samples": len(targets),
-        "lookahead": lookahead,
         "alpha": alpha,
         "speed": [float(x) for x in speed],
         "joint_names": list(arm_group.joint_names),
-        # kd/lookahead 是寄生刚度, 与 kp 同量级即说明前馈在充当额外 kp
         "kp": [float(x) for x in arm_group._mit_kp],
         "kd": [float(x) for x in arm_group._mit_kd],
         "gravity_k": [float(x) for x in arm_group._gravity_k],
@@ -180,7 +172,6 @@ def main():
     parser = argparse.ArgumentParser(description="录制 servoL(mit) 诊断数据")
     parser.add_argument("--tag", required=True, help="输出文件标签")
     parser.add_argument("--rate", type=float, default=30.0, help="控制频率 (Hz)")
-    parser.add_argument("--lookahead", type=float, default=0.033, help="前馈时间常数 (s)")
     parser.add_argument("--alpha", type=float, default=0.6, help="EMA 平滑系数")
     parser.add_argument(
         "--output-dir",
@@ -197,7 +188,7 @@ def main():
     controller = RebotArmController("mit")
     try:
         controller.connect()
-        result = record(controller, args.rate, args.lookahead, args.alpha)
+        result = record(controller, args.rate, args.alpha)
         # 先落盘再回零: 回零耗时数秒, 期间的意外不应连带丢掉数据
         output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False))
         status = "中断" if result["aborted"] else "完整"

@@ -111,8 +111,6 @@ def load_cfg(hw_yaml: str | None = None) -> dict:
         "channel": data.get("channel", "/dev/ttyACM0"),
         "comm_rate": float(data.get("comm_rate", 350.0)),
         "urdf_path": data.get("urdf_path"),
-        "movel_rate": float(data.get("movel_rate", 10.0)),
-        "servol_rate": float(data.get("servol_rate", 200.0)), 
         "groups": data.get("groups", {}),
         "joints": joints,
     }
@@ -489,7 +487,6 @@ class RebotArm:
         self._name: str = cfg["name"]
         self._channel: str = cfg["channel"]
         self._comm_period: float = 1.0 / cfg["comm_rate"]
-        self._servol_rate: float = cfg["servol_rate"]
         self._all_joints: List[JointCfg] = cfg["joints"]
         self._groups_def: dict = cfg["groups"]
 
@@ -650,10 +647,6 @@ class RebotArm:
     @property
     def hardware_yaml(self) -> str:
         return self._hw_yaml
-
-    @property
-    def servol_rate(self) -> float:
-        return self._servol_rate
 
     def __getattr__(self, name: str) -> any:
         if name.startswith("_"):
@@ -877,8 +870,10 @@ class RebotArm:
                 feedback.arm.position + arm_group._gravity_offset,
                 self._dynamics_data,
             )
+            gravity_torque = arm_group._gravity_k * gravity
+            feedback.gravity_torque = gravity_torque.copy()
             compensation = (
-                arm_group._gravity_k * gravity
+                gravity_torque
                 + arm_group._friction * np.sign(feedback.arm.velocity)
                 + arm_group._tau_bias
             )

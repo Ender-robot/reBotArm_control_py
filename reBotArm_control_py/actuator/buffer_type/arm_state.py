@@ -96,6 +96,7 @@ class Mit():
     class Feedback():
         arm: "Mit.FeedbackGroup"
         gripper: "Mit.FeedbackGroup"
+        gravity_torque: np.ndarray  # 标定后的重力补偿力矩，单位 N·m
         timestamp: float
 
     def __init__(self, num_arm_joints, num_gripper_joints):
@@ -128,5 +129,6 @@ class Mit():
                 velocity=np.zeros(num_gripper_joints),
                 torque=np.zeros(num_gripper_joints),
             ),
+            gravity_torque=np.zeros(num_arm_joints),
             timestamp=0.0,
         )

@@ -8,6 +8,7 @@ import numpy as np
 import pinocchio as pin
 
 from ..actuator import RebotArm
+from ..dynamics import compute_wrench
 from ..kinematics import (
     get_end_effector_frame_id,
     load_robot_model,
@@ -25,6 +26,7 @@ class RebotArmController:
         self.rebotarm = RebotArm(mode)
         self._model = load_robot_model()
         self._data = self._model.createData()
+        self._wrench_data = self._model.createData()
         self._end_frame_id = get_end_effector_frame_id(self._model)
 
         # >>>>> 控制器占用状态 >>>>>
@@ -104,15 +106,8 @@ class RebotArmController:
         command_state.arm.velocity[:] = speed
         self.rebotarm._joint_command_ready.set()
 
-    def servoL(self, target, speed, lookahead = 0.02):
-        """ 
-        末端笛卡尔伺服
-        lookahead 在 posvel 模式下无效
-        """
-        if self.rebotarm.mode == "mit" and (
-            not np.isfinite(lookahead) or lookahead <= 0.0
-        ):
-            raise ValueError("lookahead must be finite and positive")
+    def servoL(self, target, speed):
+        """ 末端笛卡尔伺服，speed 为关节限速（rad/s） """
         if not self._request_control(ControllerState.SERVOL):
             logger.warning(f"控制器正被 {self._controller_state} 占用, 拒绝 servoL 指令")
             return
