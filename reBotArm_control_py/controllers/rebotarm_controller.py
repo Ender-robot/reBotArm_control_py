@@ -8,7 +8,6 @@ import numpy as np
 import pinocchio as pin
 
 from ..actuator import RebotArm
-from ..dynamics import compute_wrench
 from ..kinematics import (
     get_end_effector_frame_id,
     load_robot_model,

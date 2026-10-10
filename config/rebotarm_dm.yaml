@@ -149,8 +149,8 @@ joints:
     model: "4310"
     vendor: "damiao"
     MIT:
-      kp: 10.0
-      kd: 2.0
+      kp: 0.3
+      kd: 0.01
     POS_VEL:
       vel_kp: 0.01
       vel_ki: 0.002
