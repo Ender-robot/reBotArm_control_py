@@ -102,7 +102,7 @@ def plot_curves(arrays, data, output_path):
     axes[0].set_ylabel("cmd velocity\n(rad/s)")
     axes[0].set_title(
         f"servoL(mit) diagnosis  "
-        f"alpha={data['alpha']}  rate={data['rate']}Hz"
+        f"rate={data['rate']}Hz"
     )
     axes[1].set_ylabel("position error delta\n(rad)")
     axes[2].set_ylabel("feedback velocity\n(rad/s)")

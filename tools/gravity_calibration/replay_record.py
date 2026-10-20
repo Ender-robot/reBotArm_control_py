@@ -84,9 +84,7 @@ def move_to_home(rebotarm, v_move=0.05):
 
     print(f"返回零点 (距离 {distance:.4f} rad，速度 {v_move:.3f} rad/s)...")
 
-    rebotarm.arm_state.command.arm.position[:] = q_home
-    rebotarm.arm_state.command.arm.velocity[:] = v_move
-    rebotarm._joint_command_ready.set()
+    rebotarm.submit_arm(q_home, v_move)
 
     timeout = distance / v_move * 2.0 + 10.0
     start_time = time.monotonic()
@@ -111,9 +109,7 @@ def move_to_start(rebotarm, start_q, v_move):
 
     print(f"归位到起点 (距离 {distance:.4f} rad，速度 {v_move:.3f} rad/s)...")
 
-    rebotarm.arm_state.command.arm.position[:] = start_q
-    rebotarm.arm_state.command.arm.velocity[:] = v_move
-    rebotarm._joint_command_ready.set()
+    rebotarm.submit_arm(start_q, v_move)
 
     timeout = distance / v_move * 2.0 + 5.0
     start_time = time.monotonic()
@@ -129,9 +125,7 @@ def move_to_start(rebotarm, start_q, v_move):
 
 def _send_waypoint(rebotarm, q_cmd, vlim):
     """发送一个位置保持命令。"""
-    rebotarm.arm_state.command.arm.position[:] = q_cmd
-    rebotarm.arm_state.command.arm.velocity[:] = vlim
-    rebotarm._joint_command_ready.set()
+    rebotarm.submit_arm(q_cmd, vlim)
 
 
 def _wait_until_settled(rebotarm, q_cmd, samples):

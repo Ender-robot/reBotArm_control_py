@@ -1,58 +1,39 @@
 import threading
 import time
 import logging
-logger = logging.getLogger("RebotArmController")
-import math
 
 import numpy as np
 import pinocchio as pin
 
 from ..actuator import RebotArm
 from ..kinematics import (
-    get_end_effector_frame_id,
     load_robot_model,
     pad_q_for_model,
     solve_ik,
     xyz_quat_to_se3,
-    IKSolverParams
 )
-from .buffer_type import ControllerState
-from .process_command import compute_scale_factor, EMA
+from .controller_state import ControllerState
+
+logger = logging.getLogger("RebotArmController")
+
 
 class RebotArmController:
 
     def __init__(self, mode):
         self.rebotarm = RebotArm(mode)
-        self._model = load_robot_model()
+        self._model = load_robot_model(self.rebotarm.config["urdf_path"])
         self._data = self._model.createData()
-        self._wrench_data = self._model.createData()
-        self._end_frame_id = get_end_effector_frame_id(self._model)
+        self._end_frame_id = self._model.getFrameId(self.rebotarm.config["end_effector_frame"])
 
         # >>>>> 控制器占用状态 >>>>>
         self._controller_state = ControllerState.IDLE
         self._control_timestamp = 0.0
-        self._control_timeout = 0.1
         self._control_lock = threading.Lock()
         # <<<<< 控制器占用状态 <<<<<
 
-        # >>>>> IK 参数 >>>>>
-        self.servoL_ik_params = IKSolverParams()
-        self.servoL_ik_params.max_iter = 50
-        self.servoL_ik_params.position_tolerance = 0.002
-        self.servoL_ik_params.orientation_tolerance = math.radians(1.0)
-        self.servoL_ik_params.step_size = 0.8
-        # <<<<< IK 参数 <<<<<
-
-        self.ema = EMA(0.2) # EMA 滤波器
-
-        # >>>>> servoL 速度前馈状态 >>>>>
-        self._servoL_last_q = None
-        self._servoL_last_time = 0.0
-        # <<<<< servoL 速度前馈状态 <<<<<
-
-        if mode == "mit": # 安全保护，速度控制下一段时间不更新命令就给速度置零
-            self.rebotarm.arm_state.command.velocity_timeout = self._control_timeout
-
+        self.params = self.rebotarm.params
+        self.servoL_ik_params = self.params.ik
+        self.servoL_reference_params = self.params.reference
 
     # >>>>> 公共接口 >>>>>
     def connect(self):
@@ -72,90 +53,42 @@ class RebotArmController:
         logger.info("断开连接")
 
     def set_mit_params(self, name, kp, kd):
-        """ 设置 mit 的 kp, kd 参数 """
-        if self.rebotarm.mode != "mit":
-            raise RuntimeError("仅 MIT 模式支持设置 kp, kd 参数")
-        
-        for group_name, group in self.rebotarm.groups.items():
-            if name not in group.joint_names:
-                continue
-            index = group.joint_names.index(name)
-            command = getattr(self.rebotarm.arm_state.command, group_name)
-            command.kp[index] = kp
-            command.kd[index] = kd
-            if group_name == "arm":
-                self.rebotarm._joint_command_ready.set()
-            elif group_name == "gripper":
-                self.rebotarm._gripper_command_ready.set()
-            return
-        raise ValueError(f"unknown joint: {name}")
+        """设置指定关节的 MIT 增益。"""
+        self.rebotarm.set_mit_params(name, kp, kd)
 
     def servoJ(self, target, speed):
-        """ 透传关节指令 """
-        target = np.asarray(target)
-        command_state = self.rebotarm.arm_state.command
-
+        """透传关节指令；MIT speed 为速度前馈，posvel speed 为限速。"""
         if not self._request_control(ControllerState.SERVOJ):
             logger.warning(f"控制器正被 {self._controller_state} 占用, 拒绝 servoJ 指令")
             return
+        self.rebotarm.submit_arm(target, speed)
 
-        if self.rebotarm.mode == "mit":
-            command_state.timestamp = 0.0
-        command_state.arm.position[:] = target
-        command_state.arm.velocity[:] = speed
-        self.rebotarm._joint_command_ready.set()
-
-    def servoL(self, target, speed):
-        """ 末端笛卡尔伺服，speed 为关节限速（rad/s） """
+    def servoL(self, target, speed, *, acceleration=None, frequency_hz=None):
+        """TCP 伺服；speed 为关节限速，加速度和频率参数只在 MIT 下使用。"""
         if not self._request_control(ControllerState.SERVOL):
             logger.warning(f"控制器正被 {self._controller_state} 占用, 拒绝 servoL 指令")
             return
-
         target = xyz_quat_to_se3(target)
-        arm_state = self.rebotarm.arm_state
-        q_init = arm_state.feedback.arm.position.copy()
-        ik_result = solve_ik(self._model, self._data,
-            self._end_frame_id, target, q_init, self.servoL_ik_params)
-
-        if not ik_result.success: # 如果是 mit 模式，需要紧急停速
+        q_init = self.rebotarm.arm_state.feedback.arm.position.copy()
+        ik_result = solve_ik(self._model, self._data, self._end_frame_id,
+                             target, q_init, self.servoL_ik_params)
+        if not ik_result.success:
             if self.rebotarm.mode == "mit":
-                arm_state.command.timestamp = 0.0
-                arm_state.command.arm.velocity[:] = 0.0
-                self.rebotarm._joint_command_ready.set()
-            with self._control_lock: # 锁住控制器
+                self.rebotarm.hold("ik_failure")
+            with self._control_lock:
                 self._controller_state = ControllerState.FAULT
                 self._control_timestamp = 0.0
             logger.error("servoL 逆运动学求解失败")
             return
+        if self.rebotarm.mode == "mit":
+            self.rebotarm.submit_servo_target(ik_result.q, speed, acceleration, frequency_hz)
+        else:
+            # posvel 不读取或校验加速度与自然频率。
+            self.rebotarm.submit_arm(ik_result.q, speed)
 
-        if self.rebotarm.mode == "mit": # mit 模式使用速度前馈并限速
-            command = arm_state.command
-            now = time.monotonic()
-            
-            if now - command.timestamp >= command.velocity_timeout: # 上一条指令已过期, 丢弃滤波与前馈状态
-                self.ema.reset()
-                self._servoL_last_q = None
-
-            if self._servoL_last_q is None:
-                qdot_target = np.zeros_like(ik_result.q) # 首帧无差分可用
-            else:
-                dt = now - self._servoL_last_time
-                qdot_target = (ik_result.q - self._servoL_last_q) / dt
-            self._servoL_last_q = ik_result.q.copy()
-            self._servoL_last_time = now
-
-            qdot_smooth = self.ema.update(qdot_target) # 平滑速度前馈
-            vel_scale = compute_scale_factor(qdot_smooth, speed) # 限速
-            velocity = vel_scale * qdot_smooth
-            command.timestamp = 0.0
-            command.arm.position[:] = ik_result.q
-            command.arm.velocity[:] = velocity
-            command.timestamp = time.monotonic()
-        else: # posvel 模式只限速
-            command = arm_state.command.arm
-            command.position[:] = ik_result.q
-            command.velocity[:] = speed
-        self.rebotarm._joint_command_ready.set()
+    def hold(self):
+        """取消跟随，保持当前机械臂位姿；不改变夹爪或控制器故障状态。"""
+        self.rebotarm.hold()
 
     def clear_fault(self):
         """ 清除警报标志 """
@@ -173,7 +106,6 @@ class RebotArmController:
             return False
 
         period = 1.0 / rate
-        command = arm_state.command
         steps = max(1, int(distance / speed * rate))
         deadline = time.monotonic() + timeout
         # mit 模式 velocity 是速度前馈, 回零靠位置环牵引所以给 0
@@ -184,11 +116,8 @@ class RebotArmController:
             while True:
                 step = min(step + 1, steps) # 插值走完后封顶, 自然转为保持零位
                 self._request_control(ControllerState.HOME) # 续期, 防自身占用过期
-                command.timestamp = 0.0
-                command.arm.position[:] = q_start * (1.0 - step / steps)
-                command.arm.velocity[:] = feedforward
-                command.timestamp = time.monotonic()
-                self.rebotarm._joint_command_ready.set()
+                self.rebotarm.submit_arm(
+                    q_start * (1.0 - step / steps), feedforward, expires=True)
 
                 if float(np.max(np.abs(arm_state.feedback.arm.position))) < tolerance:
                     logger.info("回零完成")
@@ -227,7 +156,7 @@ class RebotArmController:
         with self._control_lock:
             if self._controller_state == ControllerState.FAULT:
                 return False
-            expired = now - self._control_timestamp >= self._control_timeout
+            expired = now - self._control_timestamp >= self.params.command_timeout
             if self._controller_state != ControllerState.IDLE and expired:
                 self._controller_state = ControllerState.IDLE
             if self._controller_state not in (ControllerState.IDLE, state):

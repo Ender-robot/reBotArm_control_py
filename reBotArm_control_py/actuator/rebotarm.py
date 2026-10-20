@@ -1,7 +1,7 @@
 """reBotArm 分组控制系统 — JointGroup 架构。
 
 配置驱动的硬件抽象层：
-  - 所有参数均在 config/rebotarm.yaml 中定义（hardware_yaml 指定硬件配置文件）
+  - config/rebotarm.yaml 的 hardware_yaml 指定硬件配置；软件默认值见 controllers/control_params.py
   - 关节按 groups 分组，每组独立控制模式
 
 使用示例::
@@ -9,8 +9,7 @@
     # 所有分组使用 POS_VEL 模式
     arm = RebotArm("posvel")
     arm.connect()
-    arm.arm_state.command.arm.position[:] = joint_pos
-    arm._joint_command_ready.set()
+    arm.submit_arm(joint_pos, joint_speed)
 
     arm.disconnect()
 """
@@ -18,6 +17,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -27,8 +27,10 @@ import yaml
 
 from motorbridge import Controller, Mode, CallError
 
-from ..dynamics import compute_generalized_gravity, load_dynamics_model
-from .buffer_type import ArmState
+from ..kinematics.robot_model import DEFAULT_END_EFFECTOR_FRAME
+from .arm_state import ArmState
+from .mit_communicator import MitCommunicator
+from .posvel_communicator import PosVelCommunicator
 
 _CFG_DIR = Path(__file__).parent.parent.parent / "config"
 _GLOBAL_CFG = _CFG_DIR / "rebotarm.yaml"
@@ -61,7 +63,7 @@ class JointCfg:
     name: str
     motor_id: int
     feedback_id: int
-    model: str
+    model: str = "4340P"
     vendor: str = "damiao"
     kp: float = 0.0
     kd: float = 0.0
@@ -69,7 +71,7 @@ class JointCfg:
     vel_ki: float = 0.0
     pos_kp: float = 0.0
     pos_ki: float = 0.0
-    vlim: float = 0.0
+    vlim: float = 2.0
     offset: float = 0.0
     gravity_k: float = 0.0
     tau_bias: float = 0.0
@@ -87,30 +89,28 @@ def load_cfg(hw_yaml: str | None = None) -> dict:
         mc = j.get("MIT", {})
         pc = j.get("POS_VEL", {})
         calibration = j.get("calibration", {})
-        joints.append(JointCfg(
-            name=j["name"],
-            motor_id=int(j["motor_id"]),
-            feedback_id=int(j["feedback_id"]),
-            model=str(j.get("model", "4340P")),
-            vendor=str(j.get("vendor", "damiao")).lower(),
-            kp=float(mc.get("kp", 0.0)),
-            kd=float(mc.get("kd", 0.0)),
-            vel_kp=float(pc.get("vel_kp", 0.0)),
-            vel_ki=float(pc.get("vel_ki", 0.0)),
-            pos_kp=float(pc.get("pos_kp", 0.0)),
-            pos_ki=float(pc.get("pos_ki", 0.0)),
-            vlim=float(pc.get("vlim", 2.0)),
-            offset=float(calibration.get("offset", 0.0)),
-            gravity_k=float(calibration.get("gravity_k", 0.0)),
-            tau_bias=float(calibration.get("tau_bias", 0.0)),
-            friction=float(calibration.get("friction", 0.0)),
-        ))
+        values = {"name": j["name"], "motor_id": int(j["motor_id"]),
+                  "feedback_id": int(j["feedback_id"])}
+        for key in ("model", "vendor"):
+            if key in j:
+                values[key] = str(j[key])
+        if "vendor" in values:
+            values["vendor"] = values["vendor"].lower()
+        for section, keys in ((mc, ("kp", "kd")),
+                              (pc, ("vel_kp", "vel_ki", "pos_kp", "pos_ki", "vlim")),
+                              (calibration, ("offset", "gravity_k", "tau_bias", "friction"))):
+            for key in keys:
+                if key in section:
+                    values[key] = float(section[key])
+        joints.append(JointCfg(**values))
 
     return {
+        "hardware_path": str(hw_path.resolve()),
         "name": data.get("name", "reBotArm"),
         "channel": data.get("channel", "/dev/ttyACM0"),
         "comm_rate": float(data.get("comm_rate", 350.0)),
         "urdf_path": data.get("urdf_path"),
+        "end_effector_frame": data.get("end_effector_frame", DEFAULT_END_EFFECTOR_FRAME),
         "groups": data.get("groups", {}),
         "joints": joints,
     }
@@ -200,6 +200,7 @@ class JointGroup:
         all_joints: List[JointCfg],
         motor_map: Dict[str, any],
         ctrl_map: Dict[str, Controller],
+        set_mit_gains=None,
     ) -> None:
         self.name = name
         self._jn: List[str] = joint_names
@@ -208,6 +209,7 @@ class JointGroup:
         ]
         self._mm: Dict[str, any] = motor_map
         self._cm: Dict[str, Controller] = ctrl_map
+        self._set_mit_gains = set_mit_gains
         self._mode: str = "mit"
         self._mit_kp: np.ndarray = np.array([j.kp for j in self._jcfgs], dtype=np.float64)
         self._mit_kd: np.ndarray = np.array([j.kd for j in self._jcfgs], dtype=np.float64)
@@ -257,11 +259,11 @@ class JointGroup:
 
     # ── 模式切换 ────────────────────────────────────────────────────────
 
-    def _write_pv_params(self, jc: JointCfg) -> None:
+    def _write_pv_params(self, jc: JointCfg, vlim) -> None:
         m = self._mm[jc.name]
         try:
             if jc.vendor == "robstride":
-                m.robstride_write_param_f32(0x7017, jc.vlim)
+                m.robstride_write_param_f32(0x7017, vlim)
                 time.sleep(0.01)
                 m.robstride_write_param_f32(0x701F, jc.vel_kp)
                 time.sleep(0.01)
@@ -283,10 +285,14 @@ class JointGroup:
         kd: Optional[np.ndarray] = None,
     ) -> bool:
         self._mode = "mit"
-        if kp is not None:
-            self._mit_kp = np.asarray(kp, dtype=np.float64).reshape(-1)
-        if kd is not None:
-            self._mit_kd = np.asarray(kd, dtype=np.float64).reshape(-1)
+        if kp is not None or kd is not None:
+            if self._set_mit_gains is not None:
+                self._set_mit_gains(self.name, kp, kd)
+            else:
+                if kp is not None:
+                    self._mit_kp[:] = np.asarray(kp, dtype=np.float64).reshape(-1)
+                if kd is not None:
+                    self._mit_kd[:] = np.asarray(kd, dtype=np.float64).reshape(-1)
         ok = True
         for jc in self._jcfgs:
             try:
@@ -304,10 +310,10 @@ class JointGroup:
     ) -> bool:
         self._mode = "pos_vel"
         if vlim is not None:
-            self._pv_vlim = np.asarray(vlim, dtype=np.float64).reshape(-1)
+            self._pv_vlim[:] = np.asarray(vlim, dtype=np.float64).reshape(-1)
         ok = True
-        for jc in self._jcfgs:
-            self._write_pv_params(jc)
+        for index, jc in enumerate(self._jcfgs):
+            self._write_pv_params(jc, float(self._pv_vlim[index]))
             try:
                 self._mm[jc.name].ensure_mode(Mode.POS_VEL, 1000)
             except CallError as e:
@@ -480,114 +486,71 @@ class RebotArm:
     """
 
     def __init__(self, mode, hw_yaml: str | None = None) -> None:
-        self._hw_yaml = _resolve_hw_cfg_path(hw_yaml).name
-        cfg = load_cfg(hw_yaml)
+        from ..controllers.control_params import ControlParams
 
+        self.config = load_cfg(hw_yaml)
+        cfg = self.config
+        self._hardware_path = Path(cfg["hardware_path"])
+        self._hw_yaml = self._hardware_path.name
         self.mode = mode
-        self._name: str = cfg["name"]
-        self._channel: str = cfg["channel"]
-        self._comm_period: float = 1.0 / cfg["comm_rate"]
-        self._all_joints: List[JointCfg] = cfg["joints"]
-        self._groups_def: dict = cfg["groups"]
-
-        self._ctrl_map: Dict[str, Controller] = {}
-        self._motor_map: Dict[str, any] = {}
-        self._groups: Dict[str, JointGroup] = {}
-
-        self._connected: bool = False
-
-        # 按硬件配置分组，并创建同维度的命令/反馈缓冲区。
+        self._name = cfg["name"]
+        self._channel = cfg["channel"]
+        self._comm_period = 1.0 / cfg["comm_rate"]
+        self._all_joints = cfg["joints"]
+        self._groups_def = cfg["groups"]
+        self._ctrl_map = {}
+        self._motor_map = {}
+        self._groups = {}
+        self._connected = False
         self._build_groups()
-        self.arm_state = ArmState(
-            mode,
-            self._groups["arm"].num_joints,
-            self._groups["gripper"].num_joints,
-        )
-
-        if mode == "mit":
-            # MIT 命令默认使用各组配置的刚度和阻尼。
-            for group_name in ("arm", "gripper"):
-                group = self._groups[group_name]
-                if group.num_joints == 0:
-                    continue
-                command = getattr(self.arm_state.command, group_name)
-                command.kp[:] = group._mit_kp
-                command.kd[:] = group._mit_kd
-
-            arm_group = self._groups["arm"]
-            # 重力力矩顺序必须与 arm 组的发送顺序完全一致。
-            self._dynamics_model = load_dynamics_model(cfg["urdf_path"])
-            model_joint_names = list(self._dynamics_model.names[1:])
-            if model_joint_names != arm_group.joint_names:
-                raise ValueError(
-                    "dynamics model joints must match the arm group: "
-                    f"{model_joint_names} != {arm_group.joint_names}"
-                )
-            self._dynamics_data = self._dynamics_model.createData()
-
-        # 预先建立全局反馈顺序到 arm/gripper 缓冲区的索引映射。
-        joint_indexes = {
-            name: index
-            for index, name in enumerate(self.joint_names)
-        }
-        self._arm_indexes = [
-            joint_indexes[name]
-            for name in self._groups["arm"].joint_names
-        ]
-        self._gripper_indexes = [
-            joint_indexes[name]
-            for name in self._groups["gripper"].joint_names
-        ]
-
-        # RebotArm 统一持有通讯线程生命周期和两组命令事件。
-        self.comunicater = None
-        self._stop_comunicater = threading.Event()
+        self.arm_state = ArmState(mode, self.arm.num_joints, self.gripper.num_joints)
+        self.params = ControlParams(self.arm.num_joints)
+        self._command_lock = threading.Lock()
         self._joint_command_ready = threading.Event()
         self._gripper_command_ready = threading.Event()
+        self._arm_revision = 0
+        self._feedback_valid = np.zeros(self.num_joints, dtype=bool)
+        indexes = {name: index for index, name in enumerate(self.joint_names)}
+        self._arm_indexes = [indexes[name] for name in self.arm.joint_names]
+        self._gripper_indexes = [indexes[name] for name in self.gripper.joint_names]
+        if mode == "mit":
+            for name in ("arm", "gripper"):
+                group = self._groups[name]
+                if group.num_joints:
+                    command = getattr(self.arm_state.command, name)
+                    # 配置只初始化一次；组接口和命令发送引用同一份运行增益。
+                    command.kp = group._mit_kp
+                    command.kd = group._mit_kd
+        communicator_type = {"mit": MitCommunicator, "posvel": PosVelCommunicator}[mode]
+        self.communicator = communicator_type(self)
 
     def connect(self) -> None:
-        """连接总线并启动后台通讯线程。"""
+        """连接总线并启动本模式的唯一后台通讯器。"""
         if self._connected:
             return
         try:
             self._setup_motors()
         except Exception:
-            for ctrl in self._ctrl_map.values():
-                ctrl.shutdown()
-                ctrl.close()
-            self._ctrl_map.clear()
-            self._motor_map.clear()
+            self._close_controllers()
             raise
-
         self._connected = True
         try:
             for group in self._groups.values():
-                if group.num_joints == 0:
+                if not group.num_joints:
                     continue
-                if self.mode == "mit":
-                    success = group.mode_mit()
-                else:
-                    success = group.mode_pos_vel()
+                success = group.mode_mit() if self.mode == "mit" else group.mode_pos_vel()
                 if not success:
                     raise RuntimeError(f"failed to set {self.mode} mode")
-
+            self._clear_commands()
+            self._feedback_valid[:] = False
+            self.communicator.reset("connect")
             self.enable_all()
-            self._stop_comunicater.clear()
-            self.comunicater = threading.Thread(
-                target=(
-                    self._communicate_mit
-                    if self.mode == "mit"
-                    else self._communicate_posvel
-                ),
-                name="comunicater",
-                daemon=True,
-            )
-            self.comunicater.start()
+            self.communicator.start()
         except Exception:
             self.disconnect()
             raise
 
-    def _make_controller(self, vendor: str) -> Controller:
+    def _make_controller(self) -> Controller:
         if self._channel.startswith("/dev/tty"):
             return Controller.from_dm_serial(self._channel, 921600)
         return Controller(self._channel)
@@ -596,7 +559,7 @@ class RebotArm:
         for jc in self._all_joints:
             vendor = jc.vendor
             if vendor not in self._ctrl_map:
-                self._ctrl_map[vendor] = self._make_controller(vendor)
+                self._ctrl_map[vendor] = self._make_controller()
             ctrl = self._ctrl_map[vendor]
 
             if vendor == "damiao":
@@ -621,6 +584,7 @@ class RebotArm:
                 all_joints=self._all_joints,
                 motor_map=self._motor_map,
                 ctrl_map=self._ctrl_map,
+                set_mit_gains=self._set_group_mit_gains,
             )
             self._groups[gname] = g
         if "gripper" not in self._groups:
@@ -666,6 +630,7 @@ class RebotArm:
             all_joints=self._all_joints,
             motor_map=self._motor_map,
             ctrl_map=self._ctrl_map,
+            set_mit_gains=self._set_group_mit_gains,
         )
         self._groups[name] = g
         return g
@@ -673,12 +638,14 @@ class RebotArm:
     # ── 全局使能 / 失能 ────────────────────────────────────────────────
 
     def enable_all(self) -> None:
-        for g in self._groups.values():
-            g.enable()
+        for ctrl in self._ctrl_map.values():
+            ctrl.enable_all()
+            time.sleep(0.05)
 
     def disable_all(self) -> None:
-        for g in self._groups.values():
-            g.disable()
+        for ctrl in self._ctrl_map.values():
+            ctrl.disable_all()
+            time.sleep(0.05)
 
     # ── 零点 ────────────────────────────────────────────────────────────
 
@@ -725,8 +692,9 @@ class RebotArm:
             except Exception:
                 pass
         pos, vel, torq = [], [], []
-        for jc in self._all_joints:
+        for index, jc in enumerate(self._all_joints):
             st = self._motor_map[jc.name].get_state()
+            self._feedback_valid[index] = st is not None
             if st is not None:
                 pos.append(st.pos)
                 vel.append(st.vel)
@@ -758,177 +726,177 @@ class RebotArm:
     def get_torques(self) -> np.ndarray:
         return self.get_state()[2]
 
-    # ── 后台通讯 ────────────────────────────────────────────────────────
+    # ── 命令交接 ────────────────────────────────────────────────────────
 
-    def _communicate_posvel(self) -> None:
-        next_cycle = time.monotonic()
-        while not self._stop_comunicater.is_set():
-            position, velocity, torque, timestamp = self.get_state_with_time()
-            feedback = self.arm_state.feedback
-            feedback.arm.position[:] = position[self._arm_indexes]
-            feedback.arm.velocity[:] = velocity[self._arm_indexes]
-            feedback.arm.torque[:] = torque[self._arm_indexes]
-            feedback.gripper.position[:] = position[self._gripper_indexes]
-            feedback.gripper.velocity[:] = velocity[self._gripper_indexes]
-            feedback.gripper.torque[:] = torque[self._gripper_indexes]
-            feedback.timestamp = timestamp
+    def _joint_values(self, value, count, name):
+        values = np.broadcast_to(np.asarray(value, dtype=np.float64), (count,))
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must contain finite joint values")
+        return values
 
-            if self._joint_command_ready.is_set():
-                self._joint_command_ready.clear()
-                command = self.arm_state.command.arm
-                position = command.position.copy()
-                velocity = command.velocity.copy()
-                self._groups["arm"].send_pos_vel(position, velocity)
+    def submit_arm(self, position, velocity, *, expires=False):
+        """原子提交关节直通命令；velocity 在 MIT 为前馈，在 posvel 为限速。"""
+        count = self.arm.num_joints
+        position = self._joint_values(position, count, "position")
+        velocity = self._joint_values(velocity, count, "velocity")
+        with self._command_lock:
+            state = self.arm_state.command
+            state.arm.position[:] = position
+            state.arm.velocity[:] = velocity
+            state.timestamp = time.monotonic() if expires else 0.0
+            if self.mode == "mit":
+                state.source = "direct"
+                state.sequence += 1
+                state.published_ns = time.monotonic_ns()
+            self._arm_revision += 1
+            self._joint_command_ready.set()
 
-            if self._gripper_command_ready.is_set():
-                self._gripper_command_ready.clear()
-                command = self.arm_state.command.gripper
-                position = command.position.copy()
-                velocity = command.velocity.copy()
-                self._groups["gripper"].send_pos_vel(position, velocity)
+    def submit_servo_target(self, position, speed, acceleration, frequency_hz):
+        """提交完整 MIT servoL 目标，返回序号与单调发布时间。"""
+        if self.mode != "mit":
+            raise RuntimeError("servo targets require MIT mode")
+        position, speed, acceleration, frequency_hz = self.communicator.reference.validate(
+            position, speed, acceleration, frequency_hz)
+        with self._command_lock:
+            state = self.arm_state.command
+            state.arm.position[:] = position
+            state.arm.velocity[:] = 0.0
+            state.speed_limit[:] = speed
+            state.acceleration_limit[:] = acceleration
+            state.frequency_hz = frequency_hz
+            state.source = "servol"
+            state.sequence += 1
+            state.published_ns = time.monotonic_ns()
+            state.timestamp = state.published_ns / 1e9
+            self._arm_revision += 1
+            self._joint_command_ready.set()
+            return state.sequence, state.published_ns
 
-            next_cycle += self._comm_period
-            timeout = next_cycle - time.monotonic()
-            if timeout > 0.0:
-                self._stop_comunicater.wait(timeout)
-            else:
-                next_cycle = time.monotonic()
+    def hold(self, reason="hold"):
+        """按当前反馈保持机械臂，不改变增益或夹爪命令。"""
+        with self._command_lock:
+            state = self.arm_state.command
+            state.arm.position[:] = self.arm_state.feedback.arm.position
+            state.arm.velocity[:] = 0.0
+            state.timestamp = 0.0
+            if self.mode == "mit":
+                state.source = "hold"
+                state.reset_reason = reason
+            self._arm_revision += 1
+            self._joint_command_ready.set()
 
-    def _communicate_mit(self) -> None:
-        arm_group = self._groups["arm"]
-        arm_command_initialized = False
-        command_position = None
-        command_velocity = None
-        command_kp = None
-        command_kd = None
-        command_torque = None
-        command_time = 0.0
-        velocity_timeout = 0.0
-        next_cycle = time.monotonic()
-        while not self._stop_comunicater.is_set():
-            position, velocity, torque, timestamp = self.get_state_with_time()
-            feedback = self.arm_state.feedback
-            feedback.arm.position[:] = position[self._arm_indexes]
-            feedback.arm.velocity[:] = velocity[self._arm_indexes]
-            feedback.arm.torque[:] = torque[self._arm_indexes]
-            feedback.gripper.position[:] = position[self._gripper_indexes]
-            feedback.gripper.velocity[:] = velocity[self._gripper_indexes]
-            feedback.gripper.torque[:] = torque[self._gripper_indexes]
-            feedback.timestamp = timestamp
-
-            if not arm_command_initialized:
-                if any(
-                    self._motor_map[name].get_state() is None
-                    for name in arm_group.joint_names
-                ):
-                    next_cycle += self._comm_period
-                    timeout = next_cycle - time.monotonic()
-                    if timeout > 0.0:
-                        self._stop_comunicater.wait(timeout)
-                    else:
-                        next_cycle = time.monotonic()
-                    continue
-                command_state = self.arm_state.command
-                command = command_state.arm
-                command.position[:] = feedback.arm.position
+    def submit_gripper(self, position, speed=None):
+        """提交夹爪目标；MIT 使用位置控制，posvel 默认使用配置限速。"""
+        count = self.gripper.num_joints
+        position = self._joint_values(position, count, "gripper position")
+        if self.mode == "posvel":
+            if speed is None:
+                speed = self.gripper._pv_vlim if count else np.empty(0)
+            speed = self._joint_values(speed, count, "gripper speed")
+        with self._command_lock:
+            command = self.arm_state.command.gripper
+            command.position[:] = position
+            if self.mode == "mit":
                 command.velocity[:] = 0.0
                 command.torque[:] = 0.0
-                command_state.timestamp = 0.0
-                command_position = command.position.copy()
-                command_velocity = command.velocity.copy()
-                command_kp = command.kp.copy()
-                command_kd = command.kd.copy()
-                command_torque = command.torque.copy()
-                arm_command_initialized = True
-
-            if self._joint_command_ready.is_set():
-                self._joint_command_ready.clear()
-                command_state = self.arm_state.command
-                command = command_state.arm
-                command_position = command.position.copy()
-                command_velocity = command.velocity.copy()
-                command_kp = command.kp.copy()
-                command_kd = command.kd.copy()
-                command_torque = command.torque.copy()
-                command_time = command_state.timestamp
-                velocity_timeout = command_state.velocity_timeout
-
-            if (
-                command_time != 0.0
-                and time.monotonic() - command_time >= velocity_timeout
-            ):
-                expired_timestamp = command_time
-                command_time = 0.0
-                command_velocity[:] = 0.0
-                command_state = self.arm_state.command
-                if command_state.timestamp == expired_timestamp:
-                    command_state.timestamp = 0.0
-                    command_state.arm.velocity[:] = 0.0
-
-            gravity = compute_generalized_gravity(
-                self._dynamics_model,
-                feedback.arm.position + arm_group._gravity_offset,
-                self._dynamics_data,
-            )
-            gravity_torque = arm_group._gravity_k * gravity
-            feedback.gravity_torque = gravity_torque.copy()
-            compensation = (
-                gravity_torque
-                + arm_group._friction * np.sign(feedback.arm.velocity)
-                + arm_group._tau_bias
-            )
-            arm_group.send_mit(
-                command_position,
-                command_velocity,
-                command_kp,
-                command_kd,
-                command_torque + compensation,
-            )
-
-            if self._gripper_command_ready.is_set():
-                self._gripper_command_ready.clear()
-                command = self.arm_state.command.gripper
-                position = command.position.copy()
-                velocity = command.velocity.copy()
-                kp = command.kp.copy()
-                kd = command.kd.copy()
-                torque = command.torque.copy()
-                self._groups["gripper"].send_mit(
-                    position,
-                    velocity,
-                    kp,
-                    kd,
-                    torque,
-                )
-
-            next_cycle += self._comm_period
-            timeout = next_cycle - time.monotonic()
-            if timeout > 0.0:
-                self._stop_comunicater.wait(timeout)
             else:
-                next_cycle = time.monotonic()
+                command.velocity[:] = speed
+            self._gripper_command_ready.set()
+
+    def set_mit_params(self, name, kp, kd):
+        if self.mode != "mit":
+            raise RuntimeError("仅 MIT 模式支持设置 kp, kd 参数")
+        if not np.isfinite(kp) or not np.isfinite(kd) or kp < 0 or kd < 0:
+            raise ValueError("kp and kd must be finite and non-negative")
+        for group_name, group in self._groups.items():
+            names = group.joint_names
+            if name not in names:
+                continue
+            index = names.index(name)
+            with self._command_lock:
+                command = getattr(self.arm_state.command, group_name)
+                command.kp[index] = kp
+                command.kd[index] = kd
+                if group_name == "arm":
+                    self._joint_command_ready.set()
+                else:
+                    self._gripper_command_ready.set()
+            return
+        raise ValueError(f"unknown joint: {name}")
+
+    def _set_group_mit_gains(self, name, kp, kd):
+        group = self._groups[name]
+        if kp is not None:
+            kp = self._joint_values(kp, group.num_joints, "kp")
+        if kd is not None:
+            kd = self._joint_values(kd, group.num_joints, "kd")
+        with self._command_lock:
+            if kp is not None:
+                group._mit_kp[:] = kp
+            if kd is not None:
+                group._mit_kd[:] = kd
+            if self.mode == "mit":
+                if name == "arm":
+                    self._joint_command_ready.set()
+                elif name == "gripper":
+                    self._gripper_command_ready.set()
+
+    def update_feedback(self):
+        position, velocity, torque, timestamp = self.get_state_with_time()
+        with self._command_lock:
+            feedback = self.arm_state.feedback
+            for name, indexes in (("arm", self._arm_indexes), ("gripper", self._gripper_indexes)):
+                group = getattr(feedback, name)
+                group.position[:] = position[indexes]
+                group.velocity[:] = velocity[indexes]
+                group.torque[:] = torque[indexes]
+            feedback.timestamp = timestamp
+
+    def _clear_commands(self):
+        with self._command_lock:
+            command = self.arm_state.command
+            command.timestamp = 0.0
+            command.arm.position[:] = self.arm_state.feedback.arm.position
+            command.arm.velocity[:] = 0.0
+            command.gripper.position[:] = self.arm_state.feedback.gripper.position
+            command.gripper.velocity[:] = 0.0
+            if self.mode == "mit":
+                command.source = "hold"
+                command.arm.torque[:] = 0.0
+                command.gripper.torque[:] = 0.0
+            self._arm_revision += 1
+            self._joint_command_ready.clear()
+            self._gripper_command_ready.clear()
 
     # ── 生命周期 ────────────────────────────────────────────────────────
 
+    def _close_controllers(self):
+        try:
+            # 即使一个控制器关闭失败，仍关闭其余资源，并保留异常链。
+            with ExitStack() as cleanup:
+                for ctrl in self._ctrl_map.values():
+                    cleanup.callback(ctrl.close)
+                    cleanup.callback(time.sleep, 0.1)
+                    cleanup.callback(ctrl.shutdown)
+        finally:
+            self._ctrl_map.clear()
+            self._motor_map.clear()
+
     def disconnect(self) -> None:
+        self.communicator.stop()
+        self._clear_commands()
+        self.communicator.reset("disconnect")
+        self._feedback_valid[:] = False
         if not self._connected:
             return
-        communicater = self.comunicater
-        self._stop_comunicater.set()
-        if communicater is not None and communicater.is_alive():
-            communicater.join()
-        self.comunicater = None
-        self._joint_command_ready.clear()
-        self._gripper_command_ready.clear()
-        self.disable_all()
-        time.sleep(0.5)
-        for ctrl in self._ctrl_map.values():
-            ctrl.shutdown()
-            time.sleep(0.1)
-            ctrl.close()
-        self._ctrl_map.clear()
-        self._motor_map.clear()
-        self._connected = False
+        try:
+            self.disable_all()
+        finally:
+            try:
+                time.sleep(0.5)
+                self._close_controllers()
+            finally:
+                self._connected = False
 
     def estop(self) -> None:
         self.disable_all()
