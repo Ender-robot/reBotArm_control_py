@@ -16,6 +16,7 @@ _global_cfg = _cfg_dir / "rebotarm.yaml"
 _project_root = _cfg_dir.parent
 
 _hw_cfg_cache: dict | None = None
+DEFAULT_END_EFFECTOR_FRAME = "gripper_end"
 
 
 def _hw_config() -> dict:
@@ -59,7 +60,7 @@ def load_robot_model(urdf_path: str | None = None) -> pin.Model:
 
 
 def get_end_effector_frame() -> str:
-    return _hw_config().get("end_effector_frame", "gripper_end")
+    return _hw_config().get("end_effector_frame", DEFAULT_END_EFFECTOR_FRAME)
 
 
 def get_joint_count() -> int:

@@ -19,7 +19,6 @@ Z_FINAL_INTEGRATION_DISTANCE = 0.15
 X_FINAL_INTEGRATION_DISTANCE = 0.15
 Z_HOLD_TIME = 2.0
 SERVOL_SPEED = [3.0, 3.0, 6.0, 6.0, 6.0, 3.0]
-SERVOL_LOOKAHEAD = 0.033
 CONTROL_FREQUENCY = 30.0
 COMMAND_PERIOD = 1.0 / CONTROL_FREQUENCY
 
@@ -66,7 +65,6 @@ def main():
             controller.servoL(
                 target,
                 SERVOL_SPEED,
-                SERVOL_LOOKAHEAD,
             )
             time.sleep(COMMAND_PERIOD)
 
@@ -75,7 +73,6 @@ def main():
             controller.servoL(
                 target,
                 SERVOL_SPEED,
-                SERVOL_LOOKAHEAD,
             )
             time.sleep(COMMAND_PERIOD)
 
@@ -96,7 +93,6 @@ def main():
             controller.servoL(
                 target,
                 SERVOL_SPEED,
-                SERVOL_LOOKAHEAD,
             )
             time.sleep(COMMAND_PERIOD)
 
@@ -104,7 +100,6 @@ def main():
             controller.servoL(
                 target,
                 SERVOL_SPEED,
-                SERVOL_LOOKAHEAD,
             )
             time.sleep(COMMAND_PERIOD)
     except KeyboardInterrupt:

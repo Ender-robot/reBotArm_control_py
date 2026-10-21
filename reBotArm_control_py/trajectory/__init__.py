@@ -3,6 +3,7 @@
 提供 SE(3) 测地线轨迹采样与 CLIK 关节空间跟踪。
 """
 
+from .mit_reference import MitReference, MitReferenceParams
 from .sampler import (
     TrajProfile,
     TrajPlanParams,
@@ -23,6 +24,8 @@ from .trajectory_planner import (
 )
 
 __all__ = [
+    "MitReference",
+    "MitReferenceParams",
     # 采样器
     "TrajProfile",
     "TrajPlanParams",

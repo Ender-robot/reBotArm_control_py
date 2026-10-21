@@ -90,12 +90,19 @@ class Mit():
         arm: "Mit.CommandGroup"
         gripper: "Mit.CommandGroup"
         timestamp: float
-        velocity_timeout: float
+        source: str
+        sequence: int
+        published_ns: int
+        speed_limit: np.ndarray
+        acceleration_limit: np.ndarray
+        frequency_hz: float
+        reset_reason: str
 
     @dataclass
     class Feedback():
         arm: "Mit.FeedbackGroup"
         gripper: "Mit.FeedbackGroup"
+        gravity_torque: np.ndarray  # 标定后的重力补偿力矩，单位 N·m
         timestamp: float
 
     def __init__(self, num_arm_joints, num_gripper_joints):
@@ -115,7 +122,13 @@ class Mit():
                 torque=np.zeros(num_gripper_joints),
             ),
             timestamp=0.0,
-            velocity_timeout=0.0,
+            source="direct",
+            sequence=0,
+            published_ns=0,
+            speed_limit=np.zeros(num_arm_joints),
+            acceleration_limit=np.zeros(num_arm_joints),
+            frequency_hz=0.0,
+            reset_reason="initial",
         )
         self.feedback = self.Feedback(
             arm=self.FeedbackGroup(
@@ -128,5 +141,6 @@ class Mit():
                 velocity=np.zeros(num_gripper_joints),
                 torque=np.zeros(num_gripper_joints),
             ),
+            gravity_torque=np.zeros(num_arm_joints),
             timestamp=0.0,
         )
